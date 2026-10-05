@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""本地虚拟商店：固定商品目录 + 持久化购物车（SQLite）。
+
+用法：
+    python shop.py [--db 数据库文件] add 商品编号 数量
+    python shop.py [--db 数据库文件] show
+
+不指定 --db 时使用当前工作目录下的 shop.sqlite3。
+"""
+
+import sqlite3
+import sys
+
+DEFAULT_DB = "shop.sqlite3"
+
+# 固定商品目录：(编号, 名称, 单价/分)
+CATALOG = [
+    ("P001", "虚拟笔记本", 1200),
+    ("P002", "虚拟马克杯", 2500),
+]
+
+ERR_ARGS = "参数错误"
+ERR_QUANTITY = "数量必须为正整数"
+ERR_UNKNOWN_PRODUCT = "未知商品"
+ERR_DB = "数据库不可用"
+
+
+def fail(message, code):
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def parse_args(argv):
+    """解析 [--db 路径] 子命令 [参数...]，返回 (db_path, command, args)。"""
+    db_path = DEFAULT_DB
+    rest = list(argv)
+    if rest and rest[0] == "--db":
+        if len(rest) < 2:
+            fail(ERR_ARGS, 2)
+        db_path = rest[1]
+        rest = rest[2:]
+    elif rest and rest[0].startswith("--db="):
+        db_path = rest[0][len("--db="):]
+        rest = rest[1:]
+        if not db_path:
+            fail(ERR_ARGS, 2)
+    if not rest:
+        fail(ERR_ARGS, 2)
+    command, args = rest[0], rest[1:]
+    if command == "add":
+        if len(args) != 2:
+            fail(ERR_ARGS, 2)
+    elif command == "show":
+        if args:
+            fail(ERR_ARGS, 2)
+    else:
+        fail(ERR_ARGS, 2)
+    return db_path, command, args
+
+
+def open_db(db_path):
+    """打开（必要时创建）数据库并初始化商品目录。"""
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS products ("
+            "id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cart ("
+            "product_id TEXT PRIMARY KEY REFERENCES products(id), "
+            "quantity INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO products (id, name, price) VALUES (?, ?, ?)",
+            CATALOG,
+        )
+        conn.commit()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    return conn
+
+
+def parse_quantity(text):
+    """数量只接受由 0-9 组成且数值大于零的字符串，允许前导零。"""
+    if not text or any(ch not in "0123456789" for ch in text):
+        fail(ERR_QUANTITY, 2)
+    value = int(text)
+    if value <= 0:
+        fail(ERR_QUANTITY, 2)
+    return value
+
+
+def cmd_add(conn, product_id, quantity_text):
+    quantity = parse_quantity(quantity_text)
+    row = conn.execute(
+        "SELECT 1 FROM products WHERE id = ?", (product_id,)
+    ).fetchone()
+    if row is None:
+        fail(ERR_UNKNOWN_PRODUCT, 2)
+    conn.execute(
+        "INSERT INTO cart (product_id, quantity) VALUES (?, ?) "
+        "ON CONFLICT(product_id) DO UPDATE SET quantity = quantity + ?",
+        (product_id, quantity, quantity),
+    )
+    conn.commit()
+    total = conn.execute(
+        "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
+    ).fetchone()[0]
+    print(f"{product_id} 数量 {total}")
+
+
+def cmd_show(conn):
+    rows = conn.execute(
+        "SELECT p.id, p.name, p.price, c.quantity "
+        "FROM cart c JOIN products p ON p.id = c.product_id "
+        "ORDER BY p.id"
+    ).fetchall()
+    total_qty = 0
+    total_amount = 0
+    for pid, name, price, qty in rows:
+        subtotal = price * qty
+        total_qty += qty
+        total_amount += subtotal
+        print(f"{pid} {name} {price} {qty} {subtotal}")
+    print(f"总数量 {total_qty}")
+    print(f"总金额 {total_amount}")
+
+
+def main(argv):
+    db_path, command, args = parse_args(argv)
+    conn = open_db(db_path)
+    try:
+        if command == "add":
+            cmd_add(conn, args[0], args[1])
+        else:
+            cmd_show(conn)
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
