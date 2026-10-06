@@ -7,6 +7,7 @@
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] catalog
+    python shop.py [--db 数据库文件] clear
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -65,6 +66,9 @@ def parse_args(argv):
         if args:
             fail(ERR_ARGS, 2)
     elif command == "catalog":
+        if args:
+            fail(ERR_ARGS, 2)
+    elif command == "clear":
         if args:
             fail(ERR_ARGS, 2)
     else:
@@ -202,6 +206,16 @@ def cmd_show(conn):
     print(f"总金额 {total_amount}")
 
 
+def cmd_clear(conn):
+    try:
+        conn.execute("DELETE FROM cart")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        fail(ERR_DB, 1)
+    print("购物车已清空")
+
+
 def cmd_catalog(conn):
     try:
         rows = conn.execute(
@@ -225,6 +239,8 @@ def main(argv):
             cmd_remove(conn, args[0])
         elif command == "catalog":
             cmd_catalog(conn)
+        elif command == "clear":
+            cmd_clear(conn)
         else:
             cmd_show(conn)
     finally:
