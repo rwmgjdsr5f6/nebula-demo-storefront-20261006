@@ -3,6 +3,7 @@
 
 用法：
     python shop.py [--db 数据库文件] add 商品编号 数量
+    python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] show
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
@@ -22,6 +23,7 @@ CATALOG = [
 ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
 ERR_UNKNOWN_PRODUCT = "未知商品"
+ERR_NOT_IN_CART = "商品不在购物车"
 ERR_DB = "数据库不可用"
 
 
@@ -49,6 +51,9 @@ def parse_args(argv):
     command, args = rest[0], rest[1:]
     if command == "add":
         if len(args) != 2:
+            fail(ERR_ARGS, 2)
+    elif command == "remove":
+        if len(args) != 1:
             fail(ERR_ARGS, 2)
     elif command == "show":
         if args:
@@ -110,6 +115,25 @@ def cmd_add(conn, product_id, quantity_text):
     print(f"{product_id} 数量 {total}")
 
 
+def cmd_remove(conn, product_id):
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        row = conn.execute(
+            "SELECT 1 FROM cart WHERE product_id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_NOT_IN_CART, 2)
+        conn.execute("DELETE FROM cart WHERE product_id = ?", (product_id,))
+        conn.commit()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    print(f"{product_id} 已移除")
+
+
 def cmd_show(conn):
     rows = conn.execute(
         "SELECT p.id, p.name, p.price, c.quantity "
@@ -133,6 +157,8 @@ def main(argv):
     try:
         if command == "add":
             cmd_add(conn, args[0], args[1])
+        elif command == "remove":
+            cmd_remove(conn, args[0])
         else:
             cmd_show(conn)
     finally:
