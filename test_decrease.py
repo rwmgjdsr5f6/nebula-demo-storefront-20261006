@@ -55,6 +55,14 @@ INVALID_QUANTITIES = (
     "１",
 )
 
+# 超长数量：超过 Python 3.11 默认的数字转换位数限制（4300 位）。
+# 五千位的数字串若直接 int() 会抛 ValueError，必须仍走确定的业务结果。
+LONG_NINES = "9" * 5000
+LONG_LEADING_ZEROS_ONE = "0" * 5000 + "1"
+LONG_ZEROS = "0" * 5000
+# 超长数字中夹入一个字母：整体仍是格式错误（且优先于编号错误）
+LONG_WITH_LETTER = "9" * 2500 + "a" + "9" * 2499
+
 
 class ShopDecreaseTests(unittest.TestCase):
     def setUp(self):
@@ -324,6 +332,91 @@ class ShopDecreaseTests(unittest.TestCase):
             db_b,
             ("P001 虚拟笔记本 1200 3 3600", "总数量 3", "总金额 3600"),
         )
+
+    def test_overlong_quantity_beyond_cart_is_rejected_without_traceback(self):
+        """五千个 9 作为减少量：报超过购物车数量（退出 2），无异常堆栈。
+
+        Python 3.11 默认限制下直接 int() 五千位数字会抛 ValueError，
+        这里必须仍由业务分支给出确定结果；购物车保持固定样例不变。
+        """
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P001", LONG_NINES], db=db)
+        self.assert_failure(result, 2, "减少数量超过购物车数量")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_overlong_quantity_with_leading_zeros_succeeds(self):
+        """五千个前导零后接 1：与 1 等价，成功减少一件并持久化。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(
+            ["decrease", "P001", LONG_LEADING_ZEROS_ONE], db=db
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "P001 数量 1\n")
+        self.assertEqual(result.stderr, "")
+
+        self.assert_show(db, ONE_EACH_SHOW)
+
+    def test_overlong_all_zero_quantity_is_format_error(self):
+        """五千个 0：仍属全零，报数量必须为正整数，购物车不变。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P001", LONG_ZEROS], db=db)
+        self.assert_failure(result, 2, "数量必须为正整数")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_overlong_quantity_with_letter_reports_format_error_first(self):
+        """超长数字中夹入字母：即使编号 P999 未知，也先报数量格式错误。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(
+            ["decrease", "P999", LONG_WITH_LETTER], db=db
+        )
+        self.assert_failure(result, 2, "数量必须为正整数")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_valid_overlong_quantity_unknown_product(self):
+        """有效超长数量配未知编号：格式通过后报未知商品，购物车不变。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P999", LONG_NINES], db=db)
+        self.assert_failure(result, 2, "未知商品")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_valid_overlong_quantity_product_not_in_cart(self):
+        """有效超长数量、编号在目录但未入购物车：报商品不在购物车。"""
+        db = self.tmpdir / "cart.sqlite3"
+        result = self.run_shop(["add", "P001", "2"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self.run_shop(["decrease", "P002", LONG_NINES], db=db)
+        self.assert_failure(result, 2, "商品不在购物车")
+
+        self.assert_show(
+            db,
+            ("P001 虚拟笔记本 1200 2 2400", "总数量 2", "总金额 2400"),
+        )
+
+    def test_overlong_quantity_exceeding_sqlite_integer_bound(self):
+        """超过 SQLite 整数上界的减少量仍只报超过购物车数量，不写库。
+
+        数量取 MAX_QUANTITY 多一位：即便数值大到无法精确保存为
+        SQLite INTEGER，与购物车现有数量比较的业务结果也不受影响。
+        """
+        db = self.seed_sample()
+        beyond_sqlite_bound = "9223372036854775808"  # 2**63，19 位
+
+        result = self.run_shop(
+            ["decrease", "P001", beyond_sqlite_bound], db=db
+        )
+        self.assert_failure(result, 2, "减少数量超过购物车数量")
+
+        self.assert_show(db, SAMPLE_SHOW)
 
 
 if __name__ == "__main__":

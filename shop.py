@@ -124,6 +124,35 @@ def parse_quantity(text, max_value=None):
     return int(digits)
 
 
+def parse_decrease_quantity(text):
+    """decrease 专用：只校验数量格式，返回去掉前导零后的十进制数字串。
+
+    与 parse_quantity 不同，这里不把数字串转换成 int：decrease 的数量
+    没有数值上界（即使超过 SQLite 可保存的整数上界，也仍按业务规则与
+    购物车数量比较），而五千位等超长数字串在 Python 3.11 默认的数字
+    转换位数限制下执行 int() 会抛 ValueError。格式规则与
+    parse_quantity 完全一致：只接受由 0-9 组成且数值大于零的文本。
+    """
+    if not text or any(ch not in "0123456789" for ch in text):
+        fail(ERR_QUANTITY, 2)
+    digits = text.lstrip("0")
+    if not digits:
+        fail(ERR_QUANTITY, 2)
+    return digits
+
+
+def decimal_greater(digits, value):
+    """判断十进制数字串 digits 表示的正整数是否大于非负整数 value。
+
+    两边都按字符串比较，不经过 int 转换，因此数字串任意长度都有确定
+    结果，不受解释器数字转换位数限制的影响。
+    """
+    limit = str(value)
+    return len(digits) > len(limit) or (
+        len(digits) == len(limit) and digits > limit
+    )
+
+
 def cmd_add(conn, product_id, quantity_text):
     # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误
     quantity = parse_quantity(quantity_text, MAX_QUANTITY)
@@ -154,8 +183,11 @@ def cmd_add(conn, product_id, quantity_text):
 
 
 def cmd_decrease(conn, product_id, quantity_text):
-    # 数量校验优先于编号：即使编号未知也先报告数量错误
-    quantity = parse_quantity(quantity_text)
+    # 数量校验优先于编号：即使编号未知也先报告数量错误。
+    # 这里得到的是去掉前导零的数字串而非 int：减少量没有数值上界，
+    # 五千位等超长文本也要能与购物车数量作确定比较，不能因数字转换
+    # 位数限制抛出未捕获异常。
+    quantity_digits = parse_decrease_quantity(quantity_text)
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
@@ -168,9 +200,13 @@ def cmd_decrease(conn, product_id, quantity_text):
         if row is None:
             fail(ERR_NOT_IN_CART, 2)
         current = row[0]
-        if quantity > current:
+        # 按十进制字符串比较，不转 int：减少量即使超过 SQLite 可保存的
+        # 整数上界，也照样得到“超过购物车数量”的业务结果
+        if decimal_greater(quantity_digits, current):
             fail(ERR_DECREASE_TOO_MUCH, 2)
-        remaining = current - quantity
+        # 能减少说明 quantity <= current；current 是 SQLite 整数
+        # （至多 19 位），此时转换不会触及解释器的数字转换位数限制
+        remaining = current - int(quantity_digits)
         if remaining == 0:
             conn.execute(
                 "DELETE FROM cart WHERE product_id = ?", (product_id,)
