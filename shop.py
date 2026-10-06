@@ -23,8 +23,13 @@ CATALOG = [
     ("P002", "虚拟马克杯", 2500),
 ]
 
+# 数量上界：SQLite INTEGER 的最大值，保证累计数量始终可精确保存
+MAX_QUANTITY = 9223372036854775807
+MAX_QUANTITY_DIGITS = str(MAX_QUANTITY)
+
 ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
+ERR_QUANTITY_RANGE = "数量超出范围"
 ERR_UNKNOWN_PRODUCT = "未知商品"
 ERR_NOT_IN_CART = "商品不在购物车"
 ERR_DECREASE_TOO_MUCH = "减少数量超过购物车数量"
@@ -100,13 +105,19 @@ def open_db(db_path):
 
 
 def parse_quantity(text):
-    """数量只接受由 0-9 组成且数值大于零的字符串，允许前导零。"""
+    """数量只接受由 0-9 组成、数值在 1..MAX_QUANTITY 的字符串，允许前导零。"""
     if not text or any(ch not in "0123456789" for ch in text):
         fail(ERR_QUANTITY, 2)
-    value = int(text)
-    if value <= 0:
+    digits = text.lstrip("0")
+    if not digits:
         fail(ERR_QUANTITY, 2)
-    return value
+    # 先按去前导零后的位数与字典序比较，再转 int：
+    # 任意长度的数字串都走同一口径，不会触发 int 转换的位数限制
+    if len(digits) > len(MAX_QUANTITY_DIGITS) or (
+        len(digits) == len(MAX_QUANTITY_DIGITS) and digits > MAX_QUANTITY_DIGITS
+    ):
+        fail(ERR_QUANTITY_RANGE, 2)
+    return int(digits)
 
 
 def cmd_add(conn, product_id, quantity_text):
@@ -118,15 +129,19 @@ def cmd_add(conn, product_id, quantity_text):
         ).fetchone()
         if row is None:
             fail(ERR_UNKNOWN_PRODUCT, 2)
+        row = conn.execute(
+            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
+        ).fetchone()
+        current = row[0] if row is not None else 0
+        # 写入前检查累计数量：越界时直接拒绝，购物车保持原样
+        total = current + quantity
+        if total > MAX_QUANTITY:
+            fail(ERR_QUANTITY_RANGE, 2)
         conn.execute(
             "INSERT INTO cart (product_id, quantity) VALUES (?, ?) "
             "ON CONFLICT(product_id) DO UPDATE SET quantity = quantity + ?",
             (product_id, quantity, quantity),
         )
-        # 提交前读取累计数量：任一步骤失败都回滚，保留本次加入前的购物车
-        total = conn.execute(
-            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
-        ).fetchone()[0]
         conn.commit()
     except sqlite3.Error:
         conn.rollback()
