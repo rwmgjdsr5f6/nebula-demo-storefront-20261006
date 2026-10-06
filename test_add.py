@@ -11,6 +11,7 @@
 """
 
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -172,6 +173,145 @@ class ShopAddTests(unittest.TestCase):
 
         # 另一次 show 调用确认失败结果没有落盘，完整购物车保持不变
         self.assert_show(None, CART_SHOW, cwd=workdir)
+
+
+class ShopAddBrokenDbTests(unittest.TestCase):
+    """add 在数据库可打开但购物车写入失败时的回归测试。
+
+    异常样例：products 表正常且保存两件演示商品；cart 表只有
+    product_id 主键、已有 P001 记录、缺少 quantity 列。此时 add 的
+    查询/写入/提交会抛出 SQLite 错误，必须按 README 约定报告
+    “数据库不可用”（退出码 1），不得暴露异常堆栈，也不得改变
+    表结构、商品资料或原购物车记录。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmpdir = Path(self._tmp.name)
+
+    def run_shop(self, args, db=..., cwd=None):
+        """与 ShopAddTests 相同的子进程入口，默认工作目录为临时目录。"""
+        cmd = [sys.executable, str(SHOP)]
+        if db is not None:
+            if db is ...:
+                db = self.tmpdir / "broken.sqlite3"
+            cmd += ["--db", str(db)]
+        cmd += list(args)
+        env = dict(os.environ)
+        env["PYTHONUTF8"] = "1"
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd if cwd is not None else self.tmpdir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=30,
+        )
+
+    def make_broken_db(self, path):
+        """构造异常数据库：目录正常，cart 表缺 quantity 列且已有 P001。"""
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE products ("
+            "id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
+            [("P001", "虚拟笔记本", 1200), ("P002", "虚拟马克杯", 2500)],
+        )
+        conn.execute("CREATE TABLE cart (product_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO cart (product_id) VALUES ('P001')")
+        conn.commit()
+        conn.close()
+
+    def snapshot_db(self, path):
+        """读取表结构与全部记录，用于失败前后的逐字节比对。"""
+        conn = sqlite3.connect(str(path))
+        schema = conn.execute(
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+        products = conn.execute(
+            "SELECT id, name, price FROM products ORDER BY id"
+        ).fetchall()
+        cart = conn.execute("SELECT product_id FROM cart ORDER BY product_id").fetchall()
+        conn.close()
+        return schema, products, cart
+
+    def assert_db_unavailable(self, result):
+        """退出码 1、标准输出为空、标准错误仅一行“数据库不可用”、无堆栈。"""
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "数据库不可用\n")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("sqlite", result.stderr.lower())
+
+    def check_broken_add_failure(self, db_arg, db_path, cwd):
+        """对同一个异常数据库核对 add 失败输出与数据保持原样。
+
+        db_arg 为传给 run_shop 的 --db 取值（None 表示走默认文件），
+        db_path 为实际数据库文件路径，用于直接核对库内记录。
+        """
+        before = self.snapshot_db(db_path)
+
+        # 重复调用得到同一结果
+        for _ in range(2):
+            result = self.run_shop(["add", "P001", "1"], db=db_arg, cwd=cwd)
+            self.assert_db_unavailable(result)
+
+        # 数量校验仍先于编号校验与购物车写入，退出码 2
+        result = self.run_shop(["add", "P999", "0"], db=db_arg, cwd=cwd)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "数量必须为正整数\n")
+
+        result = self.run_shop(["add", "P999", "1"], db=db_arg, cwd=cwd)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "未知商品\n")
+
+        # 失败前后：表结构、商品资料、原购物车记录完全一致（不补列、不重建）
+        self.assertEqual(self.snapshot_db(db_path), before)
+
+    def test_add_on_broken_db_reports_db_unavailable_and_preserves_data(self):
+        """显式 --db 指向异常数据库：写入失败按数据库错误约定报告。"""
+        db = self.tmpdir / "broken.sqlite3"
+        self.make_broken_db(db)
+        self.check_broken_add_failure(db, db, cwd=None)
+
+    def test_add_on_broken_default_db_in_temp_cwd(self):
+        """默认 shop.sqlite3 为异常数据库时结果与显式 --db 相同。"""
+        workdir = self.tmpdir / "work"
+        workdir.mkdir()
+        db = workdir / "shop.sqlite3"
+        self.make_broken_db(db)
+        self.check_broken_add_failure(None, db, cwd=workdir)
+
+    def test_normal_db_accumulation_leading_zero_and_totals(self):
+        """正常数据库：重复加入累计、前导零被接受、金额按已保存目录计算。"""
+        db = self.tmpdir / "cart.sqlite3"
+        self.assertEqual(
+            self.run_shop(["add", "P001", "2"], db=db).stdout, "P001 数量 2\n"
+        )
+        self.assertEqual(
+            self.run_shop(["add", "P002", "1"], db=db).stdout, "P002 数量 1\n"
+        )
+
+        result = self.run_shop(["add", "P001", "01"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "P001 数量 3\n")
+
+        result = self.run_shop(["show"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "P001 虚拟笔记本 1200 3 3600\n"
+            "P002 虚拟马克杯 2500 1 2500\n"
+            "总数量 4\n"
+            "总金额 6100\n",
+        )
 
 
 if __name__ == "__main__":

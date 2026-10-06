@@ -106,21 +106,27 @@ def parse_quantity(text):
 
 
 def cmd_add(conn, product_id, quantity_text):
+    # 数量校验优先于编号与购物车写入：即使编号未知也先报告数量错误
     quantity = parse_quantity(quantity_text)
-    row = conn.execute(
-        "SELECT 1 FROM products WHERE id = ?", (product_id,)
-    ).fetchone()
-    if row is None:
-        fail(ERR_UNKNOWN_PRODUCT, 2)
-    conn.execute(
-        "INSERT INTO cart (product_id, quantity) VALUES (?, ?) "
-        "ON CONFLICT(product_id) DO UPDATE SET quantity = quantity + ?",
-        (product_id, quantity, quantity),
-    )
-    conn.commit()
-    total = conn.execute(
-        "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
-    ).fetchone()[0]
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        conn.execute(
+            "INSERT INTO cart (product_id, quantity) VALUES (?, ?) "
+            "ON CONFLICT(product_id) DO UPDATE SET quantity = quantity + ?",
+            (product_id, quantity, quantity),
+        )
+        conn.commit()
+        total = conn.execute(
+            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
+        ).fetchone()[0]
+    except sqlite3.Error:
+        # 查询、写入或提交失败：回滚本次变更，按数据库错误约定报告
+        conn.rollback()
+        fail(ERR_DB, 1)
     print(f"{product_id} 数量 {total}")
 
 
