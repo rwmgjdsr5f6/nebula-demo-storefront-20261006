@@ -177,11 +177,14 @@ def cmd_remove(conn, product_id):
 
 
 def cmd_show(conn):
-    rows = conn.execute(
-        "SELECT p.id, p.name, p.price, c.quantity "
-        "FROM cart c JOIN products p ON p.id = c.product_id "
-        "ORDER BY p.id"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT p.id, p.name, p.price, c.quantity "
+            "FROM cart c JOIN products p ON p.id = c.product_id "
+            "ORDER BY p.id"
+        ).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
     total_qty = 0
     total_amount = 0
     for pid, name, price, qty in rows:
