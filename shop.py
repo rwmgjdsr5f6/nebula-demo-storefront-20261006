@@ -3,6 +3,7 @@
 
 用法：
     python shop.py [--db 数据库文件] add 商品编号 数量
+    python shop.py [--db 数据库文件] decrease 商品编号 数量
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] catalog
@@ -25,6 +26,7 @@ ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
 ERR_UNKNOWN_PRODUCT = "未知商品"
 ERR_NOT_IN_CART = "商品不在购物车"
+ERR_EXCEED = "减少数量超过购物车数量"
 ERR_DB = "数据库不可用"
 
 
@@ -51,6 +53,9 @@ def parse_args(argv):
         fail(ERR_ARGS, 2)
     command, args = rest[0], rest[1:]
     if command == "add":
+        if len(args) != 2:
+            fail(ERR_ARGS, 2)
+    elif command == "decrease":
         if len(args) != 2:
             fail(ERR_ARGS, 2)
     elif command == "remove":
@@ -119,6 +124,37 @@ def cmd_add(conn, product_id, quantity_text):
     print(f"{product_id} 数量 {total}")
 
 
+def cmd_decrease(conn, product_id, quantity_text):
+    quantity = parse_quantity(quantity_text)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        row = conn.execute(
+            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_NOT_IN_CART, 2)
+        remaining = row[0] - quantity
+        if remaining < 0:
+            fail(ERR_EXCEED, 2)
+        if remaining == 0:
+            conn.execute(
+                "DELETE FROM cart WHERE product_id = ?", (product_id,)
+            )
+        else:
+            conn.execute(
+                "UPDATE cart SET quantity = ? WHERE product_id = ?",
+                (remaining, product_id),
+            )
+        conn.commit()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    print(f"{product_id} 数量 {remaining}")
+
+
 def cmd_remove(conn, product_id):
     try:
         row = conn.execute(
@@ -172,6 +208,8 @@ def main(argv):
     try:
         if command == "add":
             cmd_add(conn, args[0], args[1])
+        elif command == "decrease":
+            cmd_decrease(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
         elif command == "catalog":
