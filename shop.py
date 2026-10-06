@@ -5,6 +5,7 @@
     python shop.py [--db 数据库文件] add 商品编号 数量
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] show
+    python shop.py [--db 数据库文件] catalog
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -56,6 +57,9 @@ def parse_args(argv):
         if len(args) != 1:
             fail(ERR_ARGS, 2)
     elif command == "show":
+        if args:
+            fail(ERR_ARGS, 2)
+    elif command == "catalog":
         if args:
             fail(ERR_ARGS, 2)
     else:
@@ -151,6 +155,17 @@ def cmd_show(conn):
     print(f"总金额 {total_amount}")
 
 
+def cmd_catalog(conn):
+    try:
+        rows = conn.execute(
+            "SELECT id, name, price FROM products ORDER BY id"
+        ).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    for pid, name, price in rows:
+        print(f"{pid} {name} {price}")
+
+
 def main(argv):
     db_path, command, args = parse_args(argv)
     conn = open_db(db_path)
@@ -159,6 +174,8 @@ def main(argv):
             cmd_add(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
+        elif command == "catalog":
+            cmd_catalog(conn)
         else:
             cmd_show(conn)
     finally:
