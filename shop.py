@@ -5,6 +5,7 @@
     python shop.py [--db 数据库文件] add 商品编号 数量
     python shop.py [--db 数据库文件] decrease 商品编号 数量
     python shop.py [--db 数据库文件] remove 商品编号
+    python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] catalog
 
@@ -60,6 +61,9 @@ def parse_args(argv):
             fail(ERR_ARGS, 2)
     elif command == "remove":
         if len(args) != 1:
+            fail(ERR_ARGS, 2)
+    elif command == "clear":
+        if args:
             fail(ERR_ARGS, 2)
     elif command == "show":
         if args:
@@ -182,6 +186,17 @@ def cmd_remove(conn, product_id):
     print(f"{product_id} 已移除")
 
 
+def cmd_clear(conn):
+    try:
+        # 单条 DELETE 是一条原子语句：失败时整笔回滚，不会留下只删掉部分条目的购物车
+        conn.execute("DELETE FROM cart")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        fail(ERR_DB, 1)
+    print("购物车已清空")
+
+
 def cmd_show(conn):
     try:
         rows = conn.execute(
@@ -223,6 +238,8 @@ def main(argv):
             cmd_decrease(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
+        elif command == "clear":
+            cmd_clear(conn)
         elif command == "catalog":
             cmd_catalog(conn)
         else:
