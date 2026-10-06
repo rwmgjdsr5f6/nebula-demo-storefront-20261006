@@ -106,9 +106,10 @@ def open_db(db_path):
 def parse_quantity(text, max_value=None):
     """数量只接受由 0-9 组成且数值大于零的字符串，允许前导零。
 
-    指定 max_value 时，数值超过上界报“数量超出范围”。范围比较按
-    去掉前导零后的十进制字符串进行：任意长度的数字串都有确定结果，
-    不会因超长转换而出异常堆栈。
+    返回去掉前导零后的十进制数字串，不做 int 转换：任意长度的数字串
+    都有确定结果，不会触发解释器的整数转换位数限制而出异常堆栈。
+    指定 max_value 时，数值超过上界报“数量超出范围”，范围比较同样
+    按字符串进行。
     """
     if not text or any(ch not in "0123456789" for ch in text):
         fail(ERR_QUANTITY, 2)
@@ -121,12 +122,13 @@ def parse_quantity(text, max_value=None):
             len(digits) == len(limit) and digits > limit
         ):
             fail(ERR_RANGE, 2)
-    return int(digits)
+    return digits
 
 
 def cmd_add(conn, product_id, quantity_text):
     # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误
-    quantity = parse_quantity(quantity_text, MAX_QUANTITY)
+    # 已通过范围校验的数字串不超过 MAX_QUANTITY，int 转换是安全的
+    quantity = int(parse_quantity(quantity_text, MAX_QUANTITY))
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
@@ -155,7 +157,7 @@ def cmd_add(conn, product_id, quantity_text):
 
 def cmd_decrease(conn, product_id, quantity_text):
     # 数量校验优先于编号：即使编号未知也先报告数量错误
-    quantity = parse_quantity(quantity_text)
+    digits = parse_quantity(quantity_text)
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
@@ -168,9 +170,15 @@ def cmd_decrease(conn, product_id, quantity_text):
         if row is None:
             fail(ERR_NOT_IN_CART, 2)
         current = row[0]
-        if quantity > current:
+        # 按去掉前导零的数字串与现有数量比较：超过即拒绝，即使减少量
+        # 大到超出 SQLite 整数上界也沿用同一业务错误，不做超长 int 转换
+        current_digits = str(current)
+        if len(digits) > len(current_digits) or (
+            len(digits) == len(current_digits) and digits > current_digits
+        ):
             fail(ERR_DECREASE_TOO_MUCH, 2)
-        remaining = current - quantity
+        # 此处减少量不超过现有数量（库内整数），int 转换是安全的
+        remaining = current - int(digits)
         if remaining == 0:
             conn.execute(
                 "DELETE FROM cart WHERE product_id = ?", (product_id,)

@@ -55,6 +55,13 @@ INVALID_QUANTITIES = (
     "１",
 )
 
+# 五千位超长数量：超过 Python 3.11 默认的整数转换位数限制（4300 位），
+# 用于回归“decrease 不得因超长数字文本抛出未捕获异常”
+LONG_NINES = "9" * 5000            # 有效格式，数值远超 SQLite 整数上界
+LONG_ZEROS_THEN_ONE = "0" * 5000 + "1"  # 有效格式，任意长度前导零，数值为 1
+LONG_ZEROS = "0" * 5000            # 全零：数量格式错误
+LONG_WITH_LETTER = "9" * 2500 + "a" + "9" * 2499  # 超长数字中夹入字母
+
 
 class ShopDecreaseTests(unittest.TestCase):
     def setUp(self):
@@ -244,6 +251,70 @@ class ShopDecreaseTests(unittest.TestCase):
                 self.assert_failure(result, 2, "数量必须为正整数")
 
         self.assert_show(db, SAMPLE_SHOW)
+
+    def test_decrease_long_nines_over_cart_quantity_rejected(self):
+        """五千个 9：有效格式但远超购物车数量（也超 SQLite 整数上界），
+        报减少数量超过购物车数量，退出 2，无异常堆栈，购物车原样保留。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P001", LONG_NINES], db=db)
+        self.assert_failure(result, 2, "减少数量超过购物车数量")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_decrease_long_leading_zeros_then_one_succeeds(self):
+        """五千个前导零后接 1：等价于减一件，输出剩余数量并持久化。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(
+            ["decrease", "P001", LONG_ZEROS_THEN_ONE], db=db
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "P001 数量 1\n")
+        self.assertEqual(result.stderr, "")
+
+        self.assert_show(db, ONE_EACH_SHOW)
+
+    def test_decrease_long_all_zeros_is_quantity_error(self):
+        """五千个零：数值为零，报数量必须为正整数，购物车不变。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P001", LONG_ZEROS], db=db)
+        self.assert_failure(result, 2, "数量必须为正整数")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_decrease_long_quantity_with_letter_is_quantity_error(self):
+        """超长数字中夹入字母：即使编号未知也优先报数量格式错误。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P999", LONG_WITH_LETTER], db=db)
+        self.assert_failure(result, 2, "数量必须为正整数")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_decrease_long_quantity_with_unknown_product(self):
+        """有效超长数量配合未知编号：报未知商品，购物车不变。"""
+        db = self.seed_sample()
+
+        result = self.run_shop(["decrease", "P999", LONG_NINES], db=db)
+        self.assert_failure(result, 2, "未知商品")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_decrease_long_quantity_with_product_not_in_cart(self):
+        """有效超长数量配合未入购物车的目录商品：报商品不在购物车。"""
+        db = self.tmpdir / "cart.sqlite3"
+        result = self.run_shop(["add", "P001", "2"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self.run_shop(["decrease", "P002", LONG_NINES], db=db)
+        self.assert_failure(result, 2, "商品不在购物车")
+
+        self.assert_show(
+            db,
+            ("P001 虚拟笔记本 1200 2 2400", "总数量 2", "总金额 2400"),
+        )
 
     def test_decrease_without_enough_args_is_argument_error(self):
         """decrease 缺少编号或数量：报参数错误，购物车不变。"""
