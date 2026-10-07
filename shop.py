@@ -262,12 +262,31 @@ def cmd_add(conn, product_id, quantity_text):
     print(f"{product_id} 数量 {total}")
 
 
-def cmd_decrease(conn, product_id, quantity_text):
-    # 数量校验优先于编号：即使编号未知也先报告数量错误。
-    # 这里得到的是去掉前导零的数字串而非 int：减少量没有数值上界，
-    # 五千位等超长文本也要能与购物车数量作确定比较，不能因数字转换
-    # 位数限制抛出未捕获异常。
-    quantity_digits = parse_decrease_quantity(quantity_text)
+# ---- decrease / set 共用的购物车数量调整流程 ----
+#
+# 两个命令的差别只在“数量文本如何解释、调整后件数如何得出”，由调用方
+# 先完成数量解析再传入：decrease 把数量当本次减少量（无数量上界，
+# 超过当前数量即拒绝），set 把数量当最终件数（零表示移除）。解析先于
+# 商品检查，因此格式/范围错误优先于未知商品、商品不在购物车。
+# 商品存在性检查、购物车读取、零结果删记录/正结果更新、提交、失败
+# 回滚与成功输出则完全相同，统一由 adjust_cart_quantity 维护一份。
+
+
+def adjust_cart_quantity(conn, product_id, parsed_quantity, resolve_quantity):
+    """decrease 与 set 共用的购物车数量调整流程。
+
+    parsed_quantity 是调用方在打开/检查商品之前已解析好的数量表示
+    （decrease 为去掉前导零的十进制数字串，set 为非负 int）：格式与
+    范围错误已在解析阶段处理，不会进入本流程。
+    resolve_quantity(current, parsed) 是命令专属的业务计算，基于购物车
+    当前数量得出调整后的件数；业务条件不满足时由其自身 fail 退出
+    （发生在写入之前），返回零表示移除记录，返回正整数表示更新为该件数。
+
+    其余步骤对两个命令完全一致：编号必须在商品目录中按原样匹配、
+    商品必须已在购物车中；读取或写入遇到数据库错误时报“数据库不可用”
+    并退出 1，回滚保证不留下部分修改。成功时输出“编号 数量 调整后
+    件数”并以换行结束。
+    """
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
@@ -278,60 +297,52 @@ def cmd_decrease(conn, product_id, quantity_text):
             "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
         ).fetchone()
         if row is None:
+            # set 不负责首次加入（目标为零同样要求已在购物车），
+            # decrease 也只能减少已有的购物车记录
             fail(ERR_NOT_IN_CART, 2)
-        current = row[0]
-        # 按十进制字符串比较，不转 int：减少量即使超过 SQLite 可保存的
-        # 整数上界，也照样得到“超过购物车数量”的业务结果
-        if decimal_greater(quantity_digits, current):
-            fail(ERR_DECREASE_TOO_MUCH, 2)
-        # 能减少说明 quantity <= current；current 是 SQLite 整数
-        # （至多 19 位），此时转换不会触及解释器的数字转换位数限制
-        remaining = current - int(quantity_digits)
-        if remaining == 0:
+        result = resolve_quantity(row[0], parsed_quantity)
+        if result == 0:
             conn.execute(
                 "DELETE FROM cart WHERE product_id = ?", (product_id,)
             )
         else:
             conn.execute(
                 "UPDATE cart SET quantity = ? WHERE product_id = ?",
-                (remaining, product_id),
-            )
-        conn.commit()
-    except sqlite3.Error:
-        fail(ERR_DB, 1)
-    print(f"{product_id} 数量 {remaining}")
-
-
-def cmd_set(conn, product_id, quantity_text):
-    # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误。
-    # 目标数量是确定的最终件数：不累计、不按减少量解释；零表示移除记录。
-    target = parse_nonnegative_quantity(quantity_text)
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM products WHERE id = ?", (product_id,)
-        ).fetchone()
-        if row is None:
-            fail(ERR_UNKNOWN_PRODUCT, 2)
-        row = conn.execute(
-            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
-        ).fetchone()
-        if row is None:
-            # set 不负责首次加入：目标为零时同样要求商品已在购物车中
-            fail(ERR_NOT_IN_CART, 2)
-        if target == 0:
-            conn.execute(
-                "DELETE FROM cart WHERE product_id = ?", (product_id,)
-            )
-        else:
-            conn.execute(
-                "UPDATE cart SET quantity = ? WHERE product_id = ?",
-                (target, product_id),
+                (result, product_id),
             )
         conn.commit()
     except sqlite3.Error:
         conn.rollback()
         fail(ERR_DB, 1)
-    print(f"{product_id} 数量 {target}")
+    print(f"{product_id} 数量 {result}")
+
+
+def cmd_decrease(conn, product_id, quantity_text):
+    # 数量表示本次减少多少件：数量解析先于编号，即使编号未知也先报
+    # 数量错误。解析结果保留为去掉前导零的十进制数字串而非 int：
+    # 减少量没有数值上界，五千位等超长文本也要能与购物车数量作确定
+    # 比较，不能因数字转换位数限制抛出未捕获异常。
+    quantity_digits = parse_decrease_quantity(quantity_text)
+
+    def resolve_remaining(current, digits):
+        # 按十进制字符串比较，不转 int：减少量即使超过 SQLite 可保存的
+        # 整数上界，也照样得到“超过购物车数量”的业务结果
+        if decimal_greater(digits, current):
+            fail(ERR_DECREASE_TOO_MUCH, 2)
+        # 能减少说明 digits 表示的值 <= current；current 是 SQLite 整数
+        # （至多 19 位），此时转换不会触及解释器的数字转换位数限制
+        return current - int(digits)
+
+    adjust_cart_quantity(
+        conn, product_id, quantity_digits, resolve_remaining
+    )
+
+
+def cmd_set(conn, product_id, quantity_text):
+    # 数量表示确定的最终件数：不累计、不按减少量解释；零表示移除记录。
+    # 数量解析（格式先于范围）先于编号：即使编号未知也先报告数量错误。
+    target = parse_nonnegative_quantity(quantity_text)
+    adjust_cart_quantity(conn, product_id, target, lambda current, value: value)
 
 
 def cmd_price(conn, product_id, price_text):
