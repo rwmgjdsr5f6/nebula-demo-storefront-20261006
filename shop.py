@@ -5,6 +5,7 @@
     python shop.py [--db 数据库文件] add 商品编号 数量
     python shop.py [--db 数据库文件] decrease 商品编号 数量
     python shop.py [--db 数据库文件] set 商品编号 目标数量
+    python shop.py [--db 数据库文件] price 商品编号 单价
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
@@ -27,10 +28,15 @@ CATALOG = [
 # 数量上界：SQLite INTEGER 的最大值，保证落库后仍是可精确保存的整数
 MAX_QUANTITY = 9223372036854775807
 
+# 单价上界：同为 SQLite INTEGER 的最大值，单价允许为零
+MAX_PRICE = 9223372036854775807
+
 ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
 ERR_SET_QUANTITY = "数量必须为非负整数"
+ERR_PRICE = "单价必须为非负整数"
 ERR_RANGE = "数量超出范围"
+ERR_PRICE_RANGE = "单价超出范围"
 ERR_UNKNOWN_PRODUCT = "未知商品"
 ERR_NOT_IN_CART = "商品不在购物车"
 ERR_DECREASE_TOO_MUCH = "减少数量超过购物车数量"
@@ -66,6 +72,9 @@ def parse_args(argv):
         if len(args) != 2:
             fail(ERR_ARGS, 2)
     elif command == "set":
+        if len(args) != 2:
+            fail(ERR_ARGS, 2)
+    elif command == "price":
         if len(args) != 2:
             fail(ERR_ARGS, 2)
     elif command == "remove":
@@ -179,6 +188,21 @@ def parse_nonnegative_quantity(text):
     return int(digits)
 
 
+def parse_price(text):
+    """price 专用：接受由 0-9 组成的非负整数单价，允许前导零（000 即零）。
+
+    数值超过 MAX_PRICE 时报“单价超出范围”。格式校验先于范围校验，
+    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
+    确定结果，不会因超长转换而出异常堆栈。
+    """
+    digits = parse_quantity_digits(text, ERR_PRICE, allow_zero=True)
+    if not digits:
+        return 0
+    if decimal_greater(digits, MAX_PRICE):
+        fail(ERR_PRICE_RANGE, 2)
+    return int(digits)
+
+
 def cmd_add(conn, product_id, quantity_text):
     # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误
     quantity = parse_quantity(quantity_text, MAX_QUANTITY)
@@ -280,6 +304,28 @@ def cmd_set(conn, product_id, quantity_text):
     print(f"{product_id} 数量 {target}")
 
 
+def cmd_price(conn, product_id, price_text):
+    # 单价格式校验先于范围校验，二者优先于编号：即使编号未知也先报告价格错误
+    price = parse_price(price_text)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        # 只覆盖单价：名称、编号与购物车数量均不受影响，是否已加入购物车都可修改；
+        # 设成现有单价时这条 UPDATE 也照常执行并按成功处理
+        conn.execute(
+            "UPDATE products SET price = ? WHERE id = ?",
+            (price, product_id),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        fail(ERR_DB, 1)
+    print(f"{product_id} 单价 {price}")
+
+
 def cmd_remove(conn, product_id):
     try:
         row = conn.execute(
@@ -357,6 +403,8 @@ def main(argv):
             cmd_decrease(conn, args[0], args[1])
         elif command == "set":
             cmd_set(conn, args[0], args[1])
+        elif command == "price":
+            cmd_price(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
         elif command == "clear":
