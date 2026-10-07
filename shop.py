@@ -4,6 +4,7 @@
 用法：
     python shop.py [--db 数据库文件] add 商品编号 数量
     python shop.py [--db 数据库文件] decrease 商品编号 数量
+    python shop.py [--db 数据库文件] set 商品编号 目标数量
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
@@ -28,6 +29,7 @@ MAX_QUANTITY = 9223372036854775807
 
 ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
+ERR_SET_QUANTITY = "数量必须为非负整数"
 ERR_RANGE = "数量超出范围"
 ERR_UNKNOWN_PRODUCT = "未知商品"
 ERR_NOT_IN_CART = "商品不在购物车"
@@ -61,6 +63,9 @@ def parse_args(argv):
         if len(args) != 2:
             fail(ERR_ARGS, 2)
     elif command == "decrease":
+        if len(args) != 2:
+            fail(ERR_ARGS, 2)
+    elif command == "set":
         if len(args) != 2:
             fail(ERR_ARGS, 2)
     elif command == "remove":
@@ -157,6 +162,26 @@ def decimal_greater(digits, value):
     )
 
 
+def parse_nonnegative_quantity(text):
+    """set 专用：接受由 0-9 组成的非负整数，允许前导零（000 即零）。
+
+    数值超过 MAX_QUANTITY 时报“数量超出范围”。格式校验先于范围校验，
+    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
+    确定结果，不会因超长转换而出异常堆栈。
+    """
+    if not text or any(ch not in "0123456789" for ch in text):
+        fail(ERR_SET_QUANTITY, 2)
+    digits = text.lstrip("0")
+    if not digits:
+        return 0
+    limit = str(MAX_QUANTITY)
+    if len(digits) > len(limit) or (
+        len(digits) == len(limit) and digits > limit
+    ):
+        fail(ERR_RANGE, 2)
+    return int(digits)
+
+
 def cmd_add(conn, product_id, quantity_text):
     # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误
     quantity = parse_quantity(quantity_text, MAX_QUANTITY)
@@ -224,6 +249,38 @@ def cmd_decrease(conn, product_id, quantity_text):
     except sqlite3.Error:
         fail(ERR_DB, 1)
     print(f"{product_id} 数量 {remaining}")
+
+
+def cmd_set(conn, product_id, quantity_text):
+    # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误。
+    # 目标数量是确定的最终件数：不累计、不按减少量解释；零表示移除记录。
+    target = parse_nonnegative_quantity(quantity_text)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        row = conn.execute(
+            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            # set 不负责首次加入：目标为零时同样要求商品已在购物车中
+            fail(ERR_NOT_IN_CART, 2)
+        if target == 0:
+            conn.execute(
+                "DELETE FROM cart WHERE product_id = ?", (product_id,)
+            )
+        else:
+            conn.execute(
+                "UPDATE cart SET quantity = ? WHERE product_id = ?",
+                (target, product_id),
+            )
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        fail(ERR_DB, 1)
+    print(f"{product_id} 数量 {target}")
 
 
 def cmd_remove(conn, product_id):
@@ -301,6 +358,8 @@ def main(argv):
             cmd_add(conn, args[0], args[1])
         elif command == "decrease":
             cmd_decrease(conn, args[0], args[1])
+        elif command == "set":
+            cmd_set(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
         elif command == "clear":
