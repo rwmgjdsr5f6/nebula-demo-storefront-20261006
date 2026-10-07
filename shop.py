@@ -10,7 +10,7 @@
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] preview
-    python shop.py [--db 数据库文件] catalog [关键词]
+    python shop.py [--db 数据库文件] catalog [关键词] [--sort price]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -63,8 +63,35 @@ COMMAND_ARITY = {
     "clear": (0,),
     "show": (0,),
     "preview": (0,),
-    "catalog": (0, 1),
+    # catalog 的合法个数：无参数、单关键词，以及末尾带 --sort price 的两种新形式
+    "catalog": (0, 1, 2, 3),
 }
+
+
+def split_catalog_args(args):
+    """把 catalog 的参数拆成 (关键词或 None, 排序方式或 None)。
+
+    排序片段由末尾两个独立参数 --sort price 组成，只接受该大小写：
+    ``catalog --sort price`` 与 ``catalog 关键词 --sort price`` 是新形式；
+    不带排序片段时保持原有形式（无参数或单个关键词，``catalog --sort``
+    中的 --sort 仍是普通关键词）。不支持的排序值、多个关键词、重复排序
+    片段及其他不符合新旧形式的组合都在此按参数错误拒绝。
+    """
+    rest = list(args)
+    sort = None
+    if len(rest) >= 2:
+        if rest[-2] != "--sort" or rest[-1] != "price":
+            fail(ERR_ARGS, 2)
+        sort = "price"
+        rest = rest[:-2]
+    if len(rest) > 1:
+        fail(ERR_ARGS, 2)
+    if rest:
+        # 关键词是含非空白字符的完整原始参数：首尾空格也参与匹配；
+        # 空串或纯空白参数按参数错误拒绝。
+        if not rest[0].strip():
+            fail(ERR_ARGS, 2)
+    return (rest[0] if rest else None), sort
 
 
 def parse_args(argv):
@@ -87,11 +114,10 @@ def parse_args(argv):
     arity = COMMAND_ARITY.get(command)
     if arity is None or len(args) not in arity:
         fail(ERR_ARGS, 2)
-    if command == "catalog" and args:
-        # 关键词是含非空白字符的完整原始参数：首尾空格也参与匹配；
-        # 空串或纯空白参数按参数错误拒绝。
-        if not args[0].strip():
-            fail(ERR_ARGS, 2)
+    if command == "catalog":
+        # 校验关键词与末尾排序片段的组合形式；排序方式不随参数返回，
+        # 由 main 用同一拆分函数重新取得（解析入口保持三元组返回值）
+        split_catalog_args(args)
     return db_path, command, args
 
 
@@ -407,10 +433,14 @@ def cmd_preview(conn):
     write_lines(lines)
 
 
-def cmd_catalog(conn, keyword=None):
+def cmd_catalog(conn, keyword=None, sort=None):
+    # 排序只影响本次展示：按库中保存的整数分单价做数值比较（不是文本
+    # 比较），同价按编号升序，零单价自然排在正数前面；INTEGER 上界
+    # 9223372036854775807 也能准确比较。不带排序时维持原有的编号升序。
+    order = "ORDER BY price, id" if sort == "price" else "ORDER BY id"
     try:
         rows = conn.execute(
-            "SELECT id, name, price FROM products ORDER BY id"
+            "SELECT id, name, price FROM products " + order
         ).fetchall()
     except sqlite3.Error:
         fail(ERR_DB, 1)
@@ -443,7 +473,8 @@ def main(argv):
         elif command == "preview":
             cmd_preview(conn)
         elif command == "catalog":
-            cmd_catalog(conn, args[0] if args else None)
+            keyword, sort = split_catalog_args(args)
+            cmd_catalog(conn, keyword, sort)
         else:
             cmd_show(conn)
     finally:
