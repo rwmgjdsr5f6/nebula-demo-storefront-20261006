@@ -440,40 +440,81 @@ def cmd_preview(conn):
     write_lines(lines)
 
 
+# ---- catalog / budget 共用的目录读取与展示流程 ----
+
+
+def format_product_line(pid, name, price):
+    """目录浏览商品行的唯一格式：编号 名称 单价，字段间恰好一个空格。
+
+    catalog 与 budget 不再各自维护一份商品行拼法，展示格式统一由此出口。
+    """
+    return f"{pid} {name} {price}"
+
+
+def read_products(conn, condition="", params=(), by_price=False):
+    """读取目录商品，按展示顺序返回 (编号, 名称, 单价) 行序列。
+
+    catalog 与 budget 共用的唯一读取流程：名称与单价全部取自数据库
+    当前保存的内容（不使用内置目录价格），每件商品只读出一次。
+
+    condition/params 给出可选的 SQL 过滤（budget 按“price <= 上限”
+    筛选单件现价）；catalog 的关键词要按区分大小写的原始文字做字面
+    包含判断，不能交给 SQL LIKE（百分号、下划线不是通配符），因此
+    catalog 不带 SQL 条件，读出全部行后在调用方用 Python 过滤。
+    排序：by_price 为真时按库中保存的整数分单价做数值升序、同价按
+    编号升序；否则一律按编号升序。读取失败时统一报“数据库不可用”
+    退出 1，不返回任何部分结果。
+    """
+    order = "ORDER BY price, id" if by_price else "ORDER BY id"
+    sql = "SELECT id, name, price FROM products"
+    if condition:
+        sql += " WHERE " + condition
+    sql += " " + order
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+
+
+def write_product_lines(rows):
+    """目录浏览的唯一展示流程：全部行就绪后一次性输出。
+
+    每行沿用 format_product_line 的“编号 名称 单价”格式，字段间一个
+    空格；rows 为空时不输出任何字节（无匹配时标准输出为空，退出码
+    仍由调用方按成功处理），非空时末行保留换行。失败的读取已在
+    read_products 中退出，这里不会出现部分明细。
+    """
+    if not rows:
+        return
+    write_lines([format_product_line(pid, name, price) for pid, name, price in rows])
+
+
 def cmd_catalog(conn, keyword=None, sort=None):
     # 排序只影响本次展示：按库中保存的整数分单价做数值比较（不是文本
     # 比较），同价按编号升序，零单价自然排在正数前面；INTEGER 上界
     # 9223372036854775807 也能准确比较。不带排序时维持原有的编号升序。
-    order = "ORDER BY price, id" if sort == "price" else "ORDER BY id"
-    try:
-        rows = conn.execute(
-            "SELECT id, name, price FROM products " + order
-        ).fetchall()
-    except sqlite3.Error:
-        fail(ERR_DB, 1)
-    for pid, name, price in rows:
+    rows = read_products(conn, by_price=(sort == "price"))
+    if keyword is not None:
         # 关键词按区分大小写的原始文字做子串匹配：编号或名称任一字段
-        # 包含整个关键词即输出，每件商品只出现一次。在 Python 侧过滤
+        # 包含整个关键词即保留，每件商品只出现一次。在 Python 侧过滤
         # 而不用 SQL LIKE：百分号、下划线等符号一律按普通字符处理，
-        # 也不存在 ASCII 大小写折叠。关键词为 None 时输出全部商品。
-        if keyword is not None and keyword not in pid and keyword not in name:
-            continue
-        print(f"{pid} {name} {price}")
+        # 也不存在 ASCII 大小写折叠；首尾空格同样按字面参与匹配。
+        rows = [
+            (pid, name, price)
+            for pid, name, price in rows
+            if keyword in pid or keyword in name
+        ]
+    write_product_lines(rows)
 
 
 def cmd_budget(conn, limit):
-    # 按单件商品的单价筛选：与购物车数量、满减无关。名称与单价全部取自
-    # 数据库当前内容，不使用内置目录价格；按编号升序，格式与 catalog 一致。
-    # 没有符合条件的商品时不输出任何内容（连末尾换行也没有）。
-    try:
-        rows = conn.execute(
-            "SELECT id, name, price FROM products WHERE price <= ? ORDER BY id",
-            (limit,),
-        ).fetchall()
-    except sqlite3.Error:
-        fail(ERR_DB, 1)
-    for pid, name, price in rows:
-        print(f"{pid} {name} {price}")
+    # 按单件商品的现价筛选：与购物车数量、满减无关，包含价格等于上限
+    # 的商品。名称与单价全部取自数据库当前内容，不使用内置目录价格；
+    # 按编号升序，行格式与空结果处理与 catalog 完全一致（共用同一读取
+    # 与展示流程）。没有符合条件的商品时不输出任何内容（连末尾换行也
+    # 没有），退出码仍为 0。
+    rows = read_products(conn, "price <= ?", (limit,))
+    write_product_lines(rows)
 
 
 def main(argv):
