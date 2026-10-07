@@ -262,12 +262,14 @@ def cmd_add(conn, product_id, quantity_text):
     print(f"{product_id} 数量 {total}")
 
 
-def cmd_decrease(conn, product_id, quantity_text):
-    # 数量校验优先于编号：即使编号未知也先报告数量错误。
-    # 这里得到的是去掉前导零的数字串而非 int：减少量没有数值上界，
-    # 五千位等超长文本也要能与购物车数量作确定比较，不能因数字转换
-    # 位数限制抛出未捕获异常。
-    quantity_digits = parse_decrease_quantity(quantity_text)
+def read_cart_product(conn, product_id):
+    """读取购物车中的指定商品：编号按原样匹配，返回当前数量。
+
+    decrease 与 set 共用的唯一读取流程：先按原始编号查商品目录，再查
+    购物车数量。编号不存在报“未知商品”；目录存在但未加入购物车报
+    “商品不在购物车”（set 的零目标同样要求记录已存在，不负责首次
+    加入）。任一步读取失败时统一报“数据库不可用”退出 1。
+    """
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
@@ -279,26 +281,52 @@ def cmd_decrease(conn, product_id, quantity_text):
         ).fetchone()
         if row is None:
             fail(ERR_NOT_IN_CART, 2)
-        current = row[0]
-        # 按十进制字符串比较，不转 int：减少量即使超过 SQLite 可保存的
-        # 整数上界，也照样得到“超过购物车数量”的业务结果
-        if decimal_greater(quantity_digits, current):
-            fail(ERR_DECREASE_TOO_MUCH, 2)
-        # 能减少说明 quantity <= current；current 是 SQLite 整数
-        # （至多 19 位），此时转换不会触及解释器的数字转换位数限制
-        remaining = current - int(quantity_digits)
-        if remaining == 0:
+        return row[0]
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+
+
+def write_cart_quantity(conn, product_id, quantity):
+    """把调整后的件数写回购物车：目标为零时删除记录，否则更新件数。
+
+    decrease（恰好减至零）与 set（设为零）共用的唯一保存流程：零即
+    移除购物车记录，商品目录保持原样；非零则把数量直接写成给定件数。
+    单条 DELETE/UPDATE 是原子语句，失败时回滚并报“数据库不可用”
+    退出 1，不会留下部分修改。
+    """
+    try:
+        if quantity == 0:
             conn.execute(
                 "DELETE FROM cart WHERE product_id = ?", (product_id,)
             )
         else:
             conn.execute(
                 "UPDATE cart SET quantity = ? WHERE product_id = ?",
-                (remaining, product_id),
+                (quantity, product_id),
             )
         conn.commit()
     except sqlite3.Error:
+        conn.rollback()
         fail(ERR_DB, 1)
+
+
+def cmd_decrease(conn, product_id, quantity_text):
+    # 数量校验优先于编号：即使编号未知也先报告数量错误。
+    # 这里得到的是去掉前导零的数字串而非 int：减少量没有数值上界，
+    # 五千位等超长文本也要能与购物车数量作确定比较，不能因数字转换
+    # 位数限制抛出未捕获异常。
+    quantity_digits = parse_decrease_quantity(quantity_text)
+    # 商品检查与购物车读取走共用流程：编号按原样匹配
+    current = read_cart_product(conn, product_id)
+    # 按十进制字符串比较，不转 int：减少量即使超过 SQLite 可保存的
+    # 整数上界，也照样得到“超过购物车数量”的业务结果，不套用 set 的上界
+    if decimal_greater(quantity_digits, current):
+        fail(ERR_DECREASE_TOO_MUCH, 2)
+    # 能减少说明 quantity <= current；current 是 SQLite 整数
+    # （至多 19 位），此时转换不会触及解释器的数字转换位数限制
+    remaining = current - int(quantity_digits)
+    # 调整后的保存走共用流程：恰好减至零时移除该购物车记录
+    write_cart_quantity(conn, product_id, remaining)
     print(f"{product_id} 数量 {remaining}")
 
 
@@ -306,31 +334,11 @@ def cmd_set(conn, product_id, quantity_text):
     # 数量校验（格式先于范围）优先于编号：即使编号未知也先报告数量错误。
     # 目标数量是确定的最终件数：不累计、不按减少量解释；零表示移除记录。
     target = parse_nonnegative_quantity(quantity_text)
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM products WHERE id = ?", (product_id,)
-        ).fetchone()
-        if row is None:
-            fail(ERR_UNKNOWN_PRODUCT, 2)
-        row = conn.execute(
-            "SELECT quantity FROM cart WHERE product_id = ?", (product_id,)
-        ).fetchone()
-        if row is None:
-            # set 不负责首次加入：目标为零时同样要求商品已在购物车中
-            fail(ERR_NOT_IN_CART, 2)
-        if target == 0:
-            conn.execute(
-                "DELETE FROM cart WHERE product_id = ?", (product_id,)
-            )
-        else:
-            conn.execute(
-                "UPDATE cart SET quantity = ? WHERE product_id = ?",
-                (target, product_id),
-            )
-        conn.commit()
-    except sqlite3.Error:
-        conn.rollback()
-        fail(ERR_DB, 1)
+    # 商品检查与购物车读取走共用流程：set 不负责首次加入，
+    # 目标为零时同样要求商品已在购物车中
+    read_cart_product(conn, product_id)
+    # 调整后的保存走共用流程：零目标删除记录，非零直接覆盖为目标件数
+    write_cart_quantity(conn, product_id, target)
     print(f"{product_id} 数量 {target}")
 
 
