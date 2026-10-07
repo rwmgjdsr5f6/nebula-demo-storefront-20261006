@@ -101,17 +101,23 @@ class ShopCatalogTests(unittest.TestCase):
             )
             conn.commit()
 
-    def assert_catalog(self, db, expected_lines, cwd=None):
-        """另起进程调用 catalog，逐行核对编号升序的目录输出与干净的错误流。"""
-        result = self.run_shop(["catalog"], db=db, cwd=cwd)
+    def assert_catalog(self, db, expected_lines, cwd=None, keyword=None):
+        """另起进程调用 catalog，逐行核对编号升序的目录输出与干净的错误流。
+
+        keyword 为 None 时不带关键词；否则以单个参数原样传入（含首尾空格
+        的调用方自行在参数中保留）。
+        """
+        args = ["catalog"] if keyword is None else ["catalog", keyword]
+        result = self.run_shop(args, db=db, cwd=cwd)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "", result.stderr)
-        expected = "\n".join(expected_lines) + "\n"
+        expected = "\n".join(expected_lines) + "\n" if expected_lines else ""
         self.assertEqual(result.stdout, expected)
-        # 每行都以换行结束，且按编号升序排列
-        self.assertTrue(result.stdout.endswith("\n"))
-        lines = result.stdout.splitlines()
-        self.assertEqual([line.split()[0] for line in lines], sorted(line.split()[0] for line in lines))
+        if expected_lines:
+            # 每行都以换行结束，且按编号升序排列
+            self.assertTrue(result.stdout.endswith("\n"))
+            lines = result.stdout.splitlines()
+            self.assertEqual([line.split()[0] for line in lines], sorted(line.split()[0] for line in lines))
         return result
 
     def assert_show(self, db, expected_lines, cwd=None):
@@ -187,16 +193,113 @@ class ShopCatalogTests(unittest.TestCase):
         # 查看目录后购物车数量、行小计与汇总保持不变
         self.assert_show(db, RENAMED_CART_SHOW)
 
-    def test_catalog_with_extra_arg_is_argument_error(self):
-        """catalog 多带一个商品编号：仅报参数错误退出 2，已有购物车不变。"""
+    def test_catalog_keyword_matches_id_or_name_substring(self):
+        """有关键词时只输出编号或名称包含整个关键词的商品，编号升序、格式不变。"""
         db = self.seed_sample_cart()
 
-        result = self.run_shop(["catalog", "P001"], db=db)
+        # 关键词命中名称子串：仅 P001
+        self.assert_catalog(db, ["P001 虚拟笔记本 1200"], keyword="笔记本")
+        # 关键词命中编号子串：仅 P002
+        self.assert_catalog(db, ["P002 虚拟马克杯 2500"], keyword="P002")
+        # 同时命中两件商品时按编号升序各输出一次
+        self.assert_catalog(db, INITIAL_CATALOG, keyword="虚拟")
+        self.assert_catalog(db, INITIAL_CATALOG, keyword="P")
+
+    def test_catalog_keyword_is_case_sensitive_literal(self):
+        """匹配使用区分大小写的原始文字，符号不解释为通配符。"""
+        db = self.seed_sample_cart()
+
+        # 小写 p 不匹配大写 P：无输出但成功退出
+        self.assert_catalog(db, [], keyword="p001")
+        # 百分号、下划线按普通字符处理，不当作 SQL 通配符
+        self.assert_catalog(db, [], keyword="%")
+        self.assert_catalog(db, [], keyword="_")
+        self.assert_catalog(db, [], keyword="P00_")
+        self.assert_catalog(db, [], keyword="P00%")
+
+    def test_catalog_keyword_keeps_leading_and_trailing_spaces(self):
+        """含非空白字符时整个原始参数（含首尾空格）参与匹配，不按空格拆词。"""
+        db = self.seed_sample_cart()
+
+        # 编号或名称都不以“P001 ”开头/包含该串，首尾空格使匹配失败
+        self.assert_catalog(db, [], keyword=" P001")
+        self.assert_catalog(db, [], keyword="P001 ")
+        self.assert_catalog(db, [], keyword="P001 虚拟笔记本")
+        # 内部空格同样按字面匹配
+        self.assert_catalog(db, [], keyword="虚拟 笔记本")
+
+    def test_catalog_keyword_no_match_is_quiet_success(self):
+        """未找到商品时标准输出与标准错误都为空，退出码 0，不报未知商品。"""
+        db = self.seed_sample_cart()
+
+        result = self.run_shop(["catalog", "P999"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        # 无匹配的查询不改变购物车
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_uses_saved_name_and_price(self):
+        """筛选基于数据库中已保存的编号与名称，并返回当前保存的名称与价格。"""
+        db = self.seed_sample_cart()
+        self.rename_p001_in_db(db)
+
+        # 旧名称不再命中，新名称可以命中；输出的是库中当前名称与价格
+        self.assert_catalog(db, [], keyword="虚拟笔记本")
+        self.assert_catalog(db, ["P001 演示笔记本 1500"], keyword="演示")
+        self.assert_catalog(db, ["P001 演示笔记本 1500"], keyword="P001")
+        # 查询不改变商品资料与购物车
+        self.assert_show(db, RENAMED_CART_SHOW)
+
+    def test_catalog_keyword_on_fresh_db_initializes_then_filters(self):
+        """对首次使用的库先按现有规则初始化目录，再做筛选。"""
+        db = self.tmpdir / "fresh.sqlite3"
+        self.assertFalse(db.exists())
+
+        result = self.run_shop(["catalog", "笔记"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "P001 虚拟笔记本 1200\n")
+        self.assertTrue(db.is_file())
+        # 初始化并筛选后购物车仍为空
+        self.assert_cart_table_empty(db)
+
+    def test_catalog_keyword_accepts_default_db(self):
+        """省略 --db 时关键词筛选同样作用于当前工作目录下的默认库。"""
+        workdir = self.tmpdir / "work"
+        workdir.mkdir()
+        self.assert_catalog(None, ["P001 虚拟笔记本 1200"], cwd=workdir, keyword="笔记")
+
+    def test_catalog_with_too_many_keywords_is_argument_error(self):
+        """catalog 带两个关键词：仅报参数错误退出 2，已有购物车不变。"""
+        db = self.seed_sample_cart()
+
+        result = self.run_shop(["catalog", "P001", "P002"], db=db)
         self.assert_failure(result, 2, "参数错误")
 
         # 失败后目录仍可正常查看，购物车内容与调用前完全一致
         self.assert_catalog(db, INITIAL_CATALOG)
         self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_with_blank_keyword_is_argument_error(self):
+        """关键词为空字符串或全为空白：仅报参数错误退出 2，已有购物车不变。"""
+        db = self.seed_sample_cart()
+
+        for keyword in ("", " ", "\t", "  \t "):
+            result = self.run_shop(["catalog", keyword], db=db)
+            self.assert_failure(result, 2, "参数错误")
+
+        self.assert_catalog(db, INITIAL_CATALOG)
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_db_unavailable_outputs_no_product_lines(self):
+        """数据库打开失败时筛选同样只报数据库不可用退出 1，无商品行。"""
+        directory = self.tmpdir / "a_directory"
+        directory.mkdir()
+
+        result = self.run_shop(["catalog", "笔记"], db=directory)
+        self.assert_failure(result, 1, "数据库不可用")
 
     def test_db_path_pointing_at_directory_is_unavailable(self):
         """--db 指向现有目录：仅输出数据库不可用退出 1，无目录内容与堆栈。"""
