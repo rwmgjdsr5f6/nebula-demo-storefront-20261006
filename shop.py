@@ -353,7 +353,16 @@ def cmd_clear(conn):
     print("购物车已清空")
 
 
-def cmd_show(conn):
+def read_cart_summary(conn):
+    """读取购物车明细并汇总：show 与 preview 共用的唯一读取与计算入口。
+
+    名称、单价、数量全部取自数据库当前内容（不使用内置演示价格覆盖），
+    按编号升序排列。返回 (商品行文本列表, 总数量, 总金额)，商品行格式为
+    “编号 名称 单价 数量 小计”。price、qty 都是 SQLite 整数（至多 19 位）；
+    乘积与累加交给 Python 任意精度整数，即使小计或合计超过 SQLite
+    INTEGER 上界也输出完整精确的十进制整数。查询失败时报“数据库不可用”
+    并退出 1，此时标准输出尚无任何内容。
+    """
     try:
         rows = conn.execute(
             "SELECT p.id, p.name, p.price, c.quantity "
@@ -362,47 +371,43 @@ def cmd_show(conn):
         ).fetchall()
     except sqlite3.Error:
         fail(ERR_DB, 1)
+    item_lines = []
     total_qty = 0
     total_amount = 0
     for pid, name, price, qty in rows:
         subtotal = price * qty
         total_qty += qty
         total_amount += subtotal
-        print(f"{pid} {name} {price} {qty} {subtotal}")
-    print(f"总数量 {total_qty}")
-    print(f"总金额 {total_amount}")
+        item_lines.append(f"{pid} {name} {price} {qty} {subtotal}")
+    return item_lines, total_qty, total_amount
+
+
+def write_lines(lines):
+    """全部行计算完成后一次性输出：失败路径不会出现部分明细。"""
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+def cmd_show(conn):
+    item_lines, total_qty, total_amount = read_cart_summary(conn)
+    write_lines(item_lines + [
+        f"总数量 {total_qty}",
+        f"总金额 {total_amount}",
+    ])
 
 
 def cmd_preview(conn):
-    # 纯只读结算预览：沿用 show 的商品行格式与编号升序，名称、单价、数量
-    # 全部取自数据库当前内容；不创建订单、不清空购物车、不保存优惠状态。
-    try:
-        rows = conn.execute(
-            "SELECT p.id, p.name, p.price, c.quantity "
-            "FROM cart c JOIN products p ON p.id = c.product_id "
-            "ORDER BY p.id"
-        ).fetchall()
-    except sqlite3.Error:
-        fail(ERR_DB, 1)
-    total_qty = 0
-    total_amount = 0
-    lines = []
-    for pid, name, price, qty in rows:
-        # price、qty 都是 SQLite 整数（至多 19 位）；乘积与累加交给
-        # Python 任意精度整数，即使超过 SQLite INTEGER 上界也精确
-        subtotal = price * qty
-        total_qty += qty
-        total_amount += subtotal
-        lines.append(f"{pid} {name} {price} {qty} {subtotal}")
+    # 纯只读结算预览：与 show 共用同一份明细读取与汇总，不创建订单、
+    # 不清空购物车、不保存优惠状态。
+    item_lines, total_qty, total_amount = read_cart_summary(conn)
     # 固定满减只按门槛判定一次：达到或超过门槛减固定金额，否则优惠为零，
     # 不存在多档叠加
     discount = DISCOUNT_AMOUNT if total_amount >= DISCOUNT_THRESHOLD else 0
-    lines.append(f"总数量 {total_qty}")
-    lines.append(f"总金额 {total_amount}")
-    lines.append(f"优惠金额 {discount}")
-    lines.append(f"应付金额 {total_amount - discount}")
-    # 全部计算完成后一次性输出：失败路径不会出现部分明细
-    sys.stdout.write("\n".join(lines) + "\n")
+    write_lines(item_lines + [
+        f"总数量 {total_qty}",
+        f"总金额 {total_amount}",
+        f"优惠金额 {discount}",
+        f"应付金额 {total_amount - discount}",
+    ])
 
 
 def cmd_catalog(conn, keyword=None):
