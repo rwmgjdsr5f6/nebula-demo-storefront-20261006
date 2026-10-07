@@ -9,6 +9,7 @@
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
+    python shop.py [--db 数据库文件] preview
     python shop.py [--db 数据库文件] catalog [关键词]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
@@ -30,6 +31,10 @@ MAX_QUANTITY = 9223372036854775807
 
 # 单价上界：同为 SQLite INTEGER 的最大值，单价允许为零
 MAX_PRICE = 9223372036854775807
+
+# preview 的固定满减：优惠前总金额达到该门槛（分）时减固定金额，只减一次
+DISCOUNT_THRESHOLD = 5000
+DISCOUNT_AMOUNT = 500
 
 ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
@@ -57,6 +62,7 @@ COMMAND_ARITY = {
     "remove": (1,),
     "clear": (0,),
     "show": (0,),
+    "preview": (0,),
     "catalog": (0, 1),
 }
 
@@ -367,6 +373,38 @@ def cmd_show(conn):
     print(f"总金额 {total_amount}")
 
 
+def cmd_preview(conn):
+    # 纯只读结算预览：沿用 show 的商品行格式与编号升序，名称、单价、数量
+    # 全部取自数据库当前内容；不创建订单、不清空购物车、不保存优惠状态。
+    try:
+        rows = conn.execute(
+            "SELECT p.id, p.name, p.price, c.quantity "
+            "FROM cart c JOIN products p ON p.id = c.product_id "
+            "ORDER BY p.id"
+        ).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    total_qty = 0
+    total_amount = 0
+    lines = []
+    for pid, name, price, qty in rows:
+        # price、qty 都是 SQLite 整数（至多 19 位）；乘积与累加交给
+        # Python 任意精度整数，即使超过 SQLite INTEGER 上界也精确
+        subtotal = price * qty
+        total_qty += qty
+        total_amount += subtotal
+        lines.append(f"{pid} {name} {price} {qty} {subtotal}")
+    # 固定满减只按门槛判定一次：达到或超过门槛减固定金额，否则优惠为零，
+    # 不存在多档叠加
+    discount = DISCOUNT_AMOUNT if total_amount >= DISCOUNT_THRESHOLD else 0
+    lines.append(f"总数量 {total_qty}")
+    lines.append(f"总金额 {total_amount}")
+    lines.append(f"优惠金额 {discount}")
+    lines.append(f"应付金额 {total_amount - discount}")
+    # 全部计算完成后一次性输出：失败路径不会出现部分明细
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
 def cmd_catalog(conn, keyword=None):
     try:
         rows = conn.execute(
@@ -400,6 +438,8 @@ def main(argv):
             cmd_remove(conn, args[0])
         elif command == "clear":
             cmd_clear(conn)
+        elif command == "preview":
+            cmd_preview(conn)
         elif command == "catalog":
             cmd_catalog(conn, args[0] if args else None)
         else:
