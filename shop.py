@@ -11,6 +11,7 @@
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] preview
     python shop.py [--db 数据库文件] catalog [关键词] [--sort price]
+    python shop.py [--db 数据库文件] budget 最高单价
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -40,6 +41,8 @@ ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
 ERR_SET_QUANTITY = "数量必须为非负整数"
 ERR_PRICE = "单价必须为非负整数"
+ERR_BUDGET = "价格上限必须为非负整数"
+ERR_BUDGET_RANGE = "价格上限超出范围"
 ERR_RANGE = "数量超出范围"
 ERR_PRICE_RANGE = "单价超出范围"
 ERR_UNKNOWN_PRODUCT = "未知商品"
@@ -65,6 +68,7 @@ COMMAND_ARITY = {
     "preview": (0,),
     # catalog 的合法个数：无参数、单关键词，以及末尾带 --sort price 的两种新形式
     "catalog": (0, 1, 2, 3),
+    "budget": (1,),
 }
 
 
@@ -223,6 +227,21 @@ def parse_price(text):
         return 0
     if decimal_greater(digits, MAX_PRICE):
         fail(ERR_PRICE_RANGE, 2)
+    return int(digits)
+
+
+def parse_budget_limit(text):
+    """budget 专用：接受由 0-9 组成的非负整数价格上限，允许前导零（000 即零）。
+
+    数值超过 MAX_PRICE 时报“价格上限超出范围”。格式校验先于范围校验，
+    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
+    确定结果，不会因超长转换而出异常堆栈。
+    """
+    digits = parse_quantity_digits(text, ERR_BUDGET, allow_zero=True)
+    if not digits:
+        return 0
+    if decimal_greater(digits, MAX_PRICE):
+        fail(ERR_BUDGET_RANGE, 2)
     return int(digits)
 
 
@@ -454,8 +473,27 @@ def cmd_catalog(conn, keyword=None, sort=None):
         print(f"{pid} {name} {price}")
 
 
+def cmd_budget(conn, limit):
+    # 只读筛选：按库中保存的整数分单价做数值比较，单价小于或等于上限即
+    # 入选，按编号升序输出；不使用内置目录价格，也不保存预算条件。
+    try:
+        rows = conn.execute(
+            "SELECT id, name, price FROM products WHERE price <= ? ORDER BY id",
+            (limit,),
+        ).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    # 没有符合条件的商品时标准输出为空，一行也不写
+    if rows:
+        write_lines([f"{pid} {name} {price}" for pid, name, price in rows])
+
+
 def main(argv):
     db_path, command, args = parse_args(argv)
+    budget_limit = None
+    if command == "budget":
+        # 上限的格式与范围校验在打开数据库之前完成：参数非法时不创建数据库文件
+        budget_limit = parse_budget_limit(args[0])
     conn = open_db(db_path)
     try:
         if command == "add":
@@ -475,6 +513,8 @@ def main(argv):
         elif command == "catalog":
             keyword, sort = split_catalog_args(args)
             cmd_catalog(conn, keyword, sort)
+        elif command == "budget":
+            cmd_budget(conn, budget_limit)
         else:
             cmd_show(conn)
     finally:
