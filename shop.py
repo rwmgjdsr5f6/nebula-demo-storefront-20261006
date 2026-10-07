@@ -216,34 +216,35 @@ def parse_nonnegative_quantity(text):
     return int(digits)
 
 
-def parse_price(text):
-    """price 专用：接受由 0-9 组成的非负整数单价，允许前导零（000 即零）。
+def parse_nonnegative_amount(text, format_error, range_error):
+    """金额参数（price 单价、budget 价格上限）的共用校验。
 
-    数值超过 MAX_PRICE 时报“单价超出范围”。格式校验先于范围校验，
-    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
-    确定结果，不会因超长转换而出异常堆栈。
+    只接受由 0-9 组成的非空字符串，允许前导零，全零输入即零。数值
+    超过 MAX_PRICE 时报 range_error：格式校验先于范围校验。范围比较
+    按去掉前导零后的十进制字符串进行，不经过 int 转换：五千位等超长
+    数字串也有确定结果，不会因解释器数字转换位数限制抛出未捕获异常；
+    只有落在上界以内（至多 19 位）时才转换成 int 返回。
     """
-    digits = parse_quantity_digits(text, ERR_PRICE, allow_zero=True)
+    digits = parse_quantity_digits(text, format_error, allow_zero=True)
     if not digits:
         return 0
     if decimal_greater(digits, MAX_PRICE):
-        fail(ERR_PRICE_RANGE, 2)
+        fail(range_error, 2)
     return int(digits)
+
+
+def parse_price(text):
+    """price 入口的单价校验：格式错误报“单价必须为非负整数”，
+    超过 MAX_PRICE 报“单价超出范围”，允许前导零（000 即零）。
+    """
+    return parse_nonnegative_amount(text, ERR_PRICE, ERR_PRICE_RANGE)
 
 
 def parse_budget(text):
-    """budget 专用：接受由 0-9 组成的非负整数单价上限，允许前导零（000 即零）。
-
-    数值超过 MAX_PRICE 时报“价格上限超出范围”。格式校验先于范围校验，
-    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
-    确定结果，不会因超长转换而出异常堆栈。
+    """budget 入口的价格上限校验：格式错误报“价格上限必须为非负整数”，
+    超过 MAX_PRICE 报“价格上限超出范围”，允许前导零（000 即零）。
     """
-    digits = parse_quantity_digits(text, ERR_BUDGET, allow_zero=True)
-    if not digits:
-        return 0
-    if decimal_greater(digits, MAX_PRICE):
-        fail(ERR_BUDGET_RANGE, 2)
-    return int(digits)
+    return parse_nonnegative_amount(text, ERR_BUDGET, ERR_BUDGET_RANGE)
 
 
 def cmd_add(conn, product_id, quantity_text):
