@@ -11,6 +11,8 @@
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] preview
     python shop.py [--db 数据库文件] catalog [关键词]
+    python shop.py [--db 数据库文件] catalog --sort price
+    python shop.py [--db 数据库文件] catalog 关键词 --sort price
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -48,12 +50,19 @@ ERR_DECREASE_TOO_MUCH = "减少数量超过购物车数量"
 ERR_DB = "数据库不可用"
 
 
+# catalog 唯一接受的排序片段：由末尾相邻的两个独立参数 "--sort" 与
+# "price" 组成，只接受这一种大小写写法
+SORT_PRICE_ARGS = ("--sort", "price")
+
+
 def fail(message, code):
     print(message, file=sys.stderr)
     sys.exit(code)
 
 
-# 各子命令允许的参数个数：元组中的每个元素都是一种合法个数
+# 除 catalog 外各子命令允许的参数个数：元组中的每个元素都是一种合法
+# 个数。catalog 的合法形式不按参数个数区分（空、单关键词、末尾的
+# --sort price 排序片段），由 parse_catalog_args 单独校验，故不在此表。
 COMMAND_ARITY = {
     "add": (2,),
     "decrease": (2,),
@@ -63,12 +72,18 @@ COMMAND_ARITY = {
     "clear": (0,),
     "show": (0,),
     "preview": (0,),
-    "catalog": (0, 1),
 }
 
 
 def parse_args(argv):
-    """解析 [--db 路径] 子命令 [参数...]，返回 (db_path, command, args)。"""
+    """解析 [--db 路径] 子命令 [参数...]，返回 (db_path, command, args)。
+
+    合法性在打开数据库之前全部判定：catalog 交给 parse_catalog_args
+    识别空、单关键词与末尾的 --sort price 排序片段四种形式；其余命令
+    按 COMMAND_ARITY 的固定参数个数校验。返回值中的 args 始终是原样的
+    原始参数列表，catalog 的关键词与排序标志由 main 再用
+    parse_catalog_args 解析。
+    """
     db_path = DEFAULT_DB
     rest = list(argv)
     if rest and rest[0] == "--db":
@@ -84,15 +99,47 @@ def parse_args(argv):
     if not rest:
         fail(ERR_ARGS, 2)
     command, args = rest[0], rest[1:]
+    if command == "catalog":
+        # catalog 的合法形式不按参数个数区分：[]、[关键词]、
+        # [--sort, price]、[关键词, --sort, price] 四种，由专用校验在
+        # 打开数据库前判定；其余命令仍按固定的参数个数表校验。
+        parse_catalog_args(args)
+        return db_path, command, args
     arity = COMMAND_ARITY.get(command)
     if arity is None or len(args) not in arity:
         fail(ERR_ARGS, 2)
-    if command == "catalog" and args:
+    return db_path, command, args
+
+
+def parse_catalog_args(args):
+    """校验 catalog 的精确参数形式，返回 (关键词或 None, 是否按单价排序)。
+
+    只接受四种形式：
+        []                      全部商品，按编号升序
+        [关键词]                 匹配商品，按编号升序
+        [--sort, price]          全部商品，按单价升序、同价按编号升序
+        [关键词, --sort, price]  匹配商品，排序同上
+
+    排序片段由末尾两个相邻的独立参数组成，只接受这一种大小写；未使用
+    该形式时单参数一律按原始关键词处理，因此 "catalog --sort" 仍把
+    "--sort" 当作关键词。空串或纯空白关键词按参数错误拒绝。本函数在
+    打开数据库之前运行：任何不合法形式都不会创建或打开数据库。
+    """
+    sort_by_price = False
+    positional = list(args)
+    if len(positional) >= 2 and tuple(positional[-2:]) == SORT_PRICE_ARGS:
+        sort_by_price = True
+        positional = positional[:-2]
+    # 去掉末尾排序片段后至多剩一个关键词：两个普通参数即多个关键词；
+    # 排序片段不在末尾（如 catalog --sort price 关键词）同样走到这里被拒
+    if len(positional) > 1:
+        fail(ERR_ARGS, 2)
+    keyword = positional[0] if positional else None
+    if keyword is not None and not keyword.strip():
         # 关键词是含非空白字符的完整原始参数：首尾空格也参与匹配；
         # 空串或纯空白参数按参数错误拒绝。
-        if not args[0].strip():
-            fail(ERR_ARGS, 2)
-    return db_path, command, args
+        fail(ERR_ARGS, 2)
+    return keyword, sort_by_price
 
 
 def open_db(db_path):
@@ -407,10 +454,15 @@ def cmd_preview(conn):
     write_lines(lines)
 
 
-def cmd_catalog(conn, keyword=None):
+def cmd_catalog(conn, keyword=None, sort_by_price=False):
+    # 排序只影响本次展示，不落库、不改商品资料或购物车。默认按编号升序；
+    # --sort price 时按单价的数据库整数值升序（零在正数之前），同价再按
+    # 编号升序。price 列为 SQLite INTEGER，ORDER BY 按数值而非文本比较，
+    # 9223372036854775807 等整数也精确参与排序。
+    order_clause = "price, id" if sort_by_price else "id"
     try:
         rows = conn.execute(
-            "SELECT id, name, price FROM products ORDER BY id"
+            f"SELECT id, name, price FROM products ORDER BY {order_clause}"
         ).fetchall()
     except sqlite3.Error:
         fail(ERR_DB, 1)
@@ -419,6 +471,7 @@ def cmd_catalog(conn, keyword=None):
         # 包含整个关键词即输出，每件商品只出现一次。在 Python 侧过滤
         # 而不用 SQL LIKE：百分号、下划线等符号一律按普通字符处理，
         # 也不存在 ASCII 大小写折叠。关键词为 None 时输出全部商品。
+        # 过滤在排序结果之上进行，展示顺序保持不变。
         if keyword is not None and keyword not in pid and keyword not in name:
             continue
         print(f"{pid} {name} {price}")
@@ -443,7 +496,10 @@ def main(argv):
         elif command == "preview":
             cmd_preview(conn)
         elif command == "catalog":
-            cmd_catalog(conn, args[0] if args else None)
+            # parse_args 已用同一函数校验过 catalog 形式；这里在打开
+            # 数据库之后重新解析出关键词与排序标志，仅用于本次展示。
+            keyword, sort_by_price = parse_catalog_args(args)
+            cmd_catalog(conn, keyword, sort_by_price)
         else:
             cmd_show(conn)
     finally:
