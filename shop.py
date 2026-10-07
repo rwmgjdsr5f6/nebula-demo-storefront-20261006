@@ -7,7 +7,7 @@
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
-    python shop.py [--db 数据库文件] catalog
+    python shop.py [--db 数据库文件] catalog [关键词]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -73,7 +73,11 @@ def parse_args(argv):
         if args:
             fail(ERR_ARGS, 2)
     elif command == "catalog":
-        if args:
+        # 可选关键词：至多一个；为空字符串或全为空白时按参数错误处理。
+        # 校验发生在打开数据库之前，拒绝调用不会触碰已有购物车。
+        if len(args) > 1:
+            fail(ERR_ARGS, 2)
+        if args and not args[0].strip():
             fail(ERR_ARGS, 2)
     else:
         fail(ERR_ARGS, 2)
@@ -272,7 +276,7 @@ def cmd_show(conn):
     print(f"总金额 {total_amount}")
 
 
-def cmd_catalog(conn):
+def cmd_catalog(conn, keyword=None):
     try:
         rows = conn.execute(
             "SELECT id, name, price FROM products ORDER BY id"
@@ -280,6 +284,13 @@ def cmd_catalog(conn):
     except sqlite3.Error:
         fail(ERR_DB, 1)
     for pid, name, price in rows:
+        if keyword is not None:
+            # 用整个原始参数（含首尾空格）做区分大小写的子串匹配：编号或
+            # 名称任一字段包含该关键词即输出，每件商品只来自 products 表
+            # 的一行，因此只会出现一次。不做大小写/全角转换，不按空格拆
+            # 词，百分号、下划线等符号也一律按普通字符处理。
+            if keyword not in pid and keyword not in name:
+                continue
         print(f"{pid} {name} {price}")
 
 
@@ -296,7 +307,7 @@ def main(argv):
         elif command == "clear":
             cmd_clear(conn)
         elif command == "catalog":
-            cmd_catalog(conn)
+            cmd_catalog(conn, args[0] if args else None)
         else:
             cmd_show(conn)
     finally:

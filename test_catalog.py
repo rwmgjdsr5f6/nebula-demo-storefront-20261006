@@ -101,9 +101,14 @@ class ShopCatalogTests(unittest.TestCase):
             )
             conn.commit()
 
-    def assert_catalog(self, db, expected_lines, cwd=None):
-        """另起进程调用 catalog，逐行核对编号升序的目录输出与干净的错误流。"""
-        result = self.run_shop(["catalog"], db=db, cwd=cwd)
+    def assert_catalog(self, db, expected_lines, cwd=None, keyword=None):
+        """另起进程调用 catalog，逐行核对编号升序的目录输出与干净的错误流。
+
+        keyword 为 None 时不带关键词；否则作为唯一的原始参数透传
+        （包括空字符串或首尾空格）。
+        """
+        args = ["catalog"] if keyword is None else ["catalog", keyword]
+        result = self.run_shop(args, db=db, cwd=cwd)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "", result.stderr)
         expected = "\n".join(expected_lines) + "\n"
@@ -187,14 +192,169 @@ class ShopCatalogTests(unittest.TestCase):
         # 查看目录后购物车数量、行小计与汇总保持不变
         self.assert_show(db, RENAMED_CART_SHOW)
 
-    def test_catalog_with_extra_arg_is_argument_error(self):
-        """catalog 多带一个商品编号：仅报参数错误退出 2，已有购物车不变。"""
+    def test_catalog_keyword_matches_name_substring(self):
+        """名称中包含完整关键词的商品才输出：catalog 笔记 只剩 P001 一行。"""
+        db = self.seed_sample_cart()
+
+        result = self.run_shop(["catalog", "笔记"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "", result.stderr)
+        self.assertEqual(result.stdout, "P001 虚拟笔记本 1200\n")
+
+        # 查询不改变购物车
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_matches_id(self):
+        """关键词命中编号同样输出：catalog P001 只剩 P001 一行。"""
         db = self.seed_sample_cart()
 
         result = self.run_shop(["catalog", "P001"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "", result.stderr)
+        self.assertEqual(result.stdout, "P001 虚拟笔记本 1200\n")
+
+        # 命中两件商品时仍按编号升序输出
+        result = self.run_shop(["catalog", "P00"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "P001 虚拟笔记本 1200\nP002 虚拟马克杯 2500\n",
+        )
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_no_match_is_silent_success(self):
+        """未找到商品：标准输出与标准错误均为空，退出码 0，不报未知商品。"""
+        db = self.seed_sample_cart()
+
+        result = self.run_shop(["catalog", "P999"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        # 名称里同样找不到时结果一致
+        result = self.run_shop(["catalog", "不存在的商品"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        # 静默无命中不改变购物车
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_is_case_sensitive_raw_text(self):
+        """匹配区分大小写：小写 p001 不命中，百分号下划线不做通配符。"""
+        db = self.seed_sample_cart()
+
+        # 大小写不一致：无输出但成功
+        result = self.run_shop(["catalog", "p001"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        # 符号按普通字符处理，不解释为 SQL 通配符
+        for keyword in ("P%", "P00_", "%", "_"):
+            result = self.run_shop(["catalog", keyword], db=db)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "", repr(keyword))
+            self.assertEqual(result.stderr, "")
+
+        # 完整关键词必须整体出现：按空格拆开的片段不单独参与匹配
+        result = self.run_shop(["catalog", "虚拟 笔记本"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_keeps_leading_and_trailing_spaces(self):
+        """参与匹配的是整个原始参数，首尾空格不剔除。"""
+        db = self.seed_sample_cart()
+
+        result = self.run_shop(["catalog", " P001"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        result = self.run_shop(["catalog", "P001 "], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_uses_saved_name_and_price(self):
+        """关键词筛选同样以库内已保存的名称与价格为准。"""
+        db = self.seed_sample_cart()
+        self.rename_p001_in_db(db)
+
+        # 旧名称不再命中
+        result = self.run_shop(["catalog", "虚拟笔记本"], db=db)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
+        # 新名称与新价格参与匹配并输出
+        result = self.run_shop(["catalog", "演示"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "P001 演示笔记本 1500\n")
+
+        # 购物车数量与按新价格计算的汇总保持不变
+        self.assert_show(db, RENAMED_CART_SHOW)
+
+    def test_catalog_keyword_creates_fresh_db_then_filters(self):
+        """对不存在的库带关键词执行 catalog：先按现有规则建目录再筛选。"""
+        db = self.tmpdir / "fresh.sqlite3"
+        self.assertFalse(db.exists())
+
+        result = self.run_shop(["catalog", "笔记"], db=db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "P001 虚拟笔记本 1200\n")
+        self.assertTrue(db.is_file())
+        self.assert_cart_table_empty(db)
+
+        # 无命中时同样完成初始化
+        db2 = self.tmpdir / "fresh2.sqlite3"
+        result = self.run_shop(["catalog", "P999"], db=db2)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+        self.assert_catalog(db2, INITIAL_CATALOG)
+        self.assert_cart_table_empty(db2)
+
+    def test_catalog_too_many_keywords_is_argument_error(self):
+        """catalog 带两个及以上关键词：仅报参数错误退出 2，已有购物车不变。"""
+        db = self.seed_sample_cart()
+
+        result = self.run_shop(["catalog", "P001", "笔记"], db=db)
         self.assert_failure(result, 2, "参数错误")
 
-        # 失败后目录仍可正常查看，购物车内容与调用前完全一致
+        # 失败后目录仍可正常查看（带或不带关键词），购物车与调用前一致
+        self.assert_catalog(db, INITIAL_CATALOG)
+        self.assert_catalog(db, ("P001 虚拟笔记本 1200",), keyword="P001")
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_empty_or_blank_keyword_is_argument_error(self):
+        """空字符串或全为空白的关键词：参数错误退出 2，不触碰购物车。"""
+        db = self.seed_sample_cart()
+
+        for keyword in ("", "   ", "\t", " \t "):
+            result = self.run_shop(["catalog", keyword], db=db)
+            self.assert_failure(result, 2, "参数错误")
+
+        self.assert_catalog(db, INITIAL_CATALOG)
+        self.assert_show(db, SAMPLE_SHOW)
+
+    def test_catalog_keyword_db_failure_is_db_error(self):
+        """带关键词时数据库不可用：仅输出数据库不可用退出 1，无商品行。"""
+        directory = self.tmpdir / "a_directory"
+        directory.mkdir()
+
+        result = self.run_shop(["catalog", "P001"], db=directory)
+        self.assert_failure(result, 1, "数据库不可用")
+
+    def test_catalog_without_keyword_still_lists_all(self):
+        """不带关键词时行为不变：全部商品按编号升序，购物车不受影响。"""
+        db = self.seed_sample_cart()
         self.assert_catalog(db, INITIAL_CATALOG)
         self.assert_show(db, SAMPLE_SHOW)
 
