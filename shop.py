@@ -112,39 +112,22 @@ def open_db(db_path):
     return conn
 
 
-def parse_quantity(text, max_value=None):
-    """数量只接受由 0-9 组成且数值大于零的字符串，允许前导零。
+def parse_quantity_digits(text, format_error):
+    """校验数量格式，返回去掉前导零后的十进制数字串（全零时为空串）。
 
-    指定 max_value 时，数值超过上界报“数量超出范围”。范围比较按
-    去掉前导零后的十进制字符串进行：任意长度的数字串都有确定结果，
-    不会因超长转换而出异常堆栈。
+    数量只接受由 0-9 组成的完整字符串，允许前导零；空串、空白、正负号、
+    小数、全角数字和混入字母均以 format_error 报错。返回数字串而非 int：
+    任意长度的输入都有确定结果，不受解释器数字转换位数限制的影响；
+    零值与数值上界由各调用方按自身语义处理。
     """
     if not text or any(ch not in "0123456789" for ch in text):
-        fail(ERR_QUANTITY, 2)
-    digits = text.lstrip("0")
-    if not digits:
-        fail(ERR_QUANTITY, 2)
-    if max_value is not None:
-        limit = str(max_value)
-        if len(digits) > len(limit) or (
-            len(digits) == len(limit) and digits > limit
-        ):
-            fail(ERR_RANGE, 2)
-    return int(digits)
+        fail(format_error, 2)
+    return text.lstrip("0")
 
 
-def parse_decrease_quantity(text):
-    """decrease 专用：只校验数量格式，返回去掉前导零后的十进制数字串。
-
-    与 parse_quantity 不同，这里不把数字串转换成 int：decrease 的数量
-    没有数值上界（即使超过 SQLite 可保存的整数上界，也仍按业务规则与
-    购物车数量比较），而五千位等超长数字串在 Python 3.11 默认的数字
-    转换位数限制下执行 int() 会抛 ValueError。格式规则与
-    parse_quantity 完全一致：只接受由 0-9 组成且数值大于零的文本。
-    """
-    if not text or any(ch not in "0123456789" for ch in text):
-        fail(ERR_QUANTITY, 2)
-    digits = text.lstrip("0")
+def parse_positive_digits(text):
+    """add、decrease 共用：数量必须是正整数，零及全零串同样拒绝。"""
+    digits = parse_quantity_digits(text, ERR_QUANTITY)
     if not digits:
         fail(ERR_QUANTITY, 2)
     return digits
@@ -162,6 +145,18 @@ def decimal_greater(digits, value):
     )
 
 
+def parse_quantity(text, max_value):
+    """add 专用：正整数且不超过 max_value，越界报“数量超出范围”。
+
+    格式校验先于范围校验，范围比较按去掉前导零后的十进制字符串进行：
+    任意长度的数字串都有确定结果，不会因超长转换而出异常堆栈。
+    """
+    digits = parse_positive_digits(text)
+    if decimal_greater(digits, max_value):
+        fail(ERR_RANGE, 2)
+    return int(digits)
+
+
 def parse_nonnegative_quantity(text):
     """set 专用：接受由 0-9 组成的非负整数，允许前导零（000 即零）。
 
@@ -169,15 +164,10 @@ def parse_nonnegative_quantity(text):
     范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
     确定结果，不会因超长转换而出异常堆栈。
     """
-    if not text or any(ch not in "0123456789" for ch in text):
-        fail(ERR_SET_QUANTITY, 2)
-    digits = text.lstrip("0")
+    digits = parse_quantity_digits(text, ERR_SET_QUANTITY)
     if not digits:
         return 0
-    limit = str(MAX_QUANTITY)
-    if len(digits) > len(limit) or (
-        len(digits) == len(limit) and digits > limit
-    ):
+    if decimal_greater(digits, MAX_QUANTITY):
         fail(ERR_RANGE, 2)
     return int(digits)
 
@@ -216,7 +206,7 @@ def cmd_decrease(conn, product_id, quantity_text):
     # 这里得到的是去掉前导零的数字串而非 int：减少量没有数值上界，
     # 五千位等超长文本也要能与购物车数量作确定比较，不能因数字转换
     # 位数限制抛出未捕获异常。
-    quantity_digits = parse_decrease_quantity(quantity_text)
+    quantity_digits = parse_positive_digits(quantity_text)
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
