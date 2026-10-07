@@ -11,7 +11,7 @@
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] preview
     python shop.py [--db 数据库文件] catalog [关键词] [--sort price]
-    python shop.py [--db 数据库文件] budget 最高单价
+    python shop.py [--db 数据库文件] budget 最高单价 [--keyword 关键词]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -68,8 +68,8 @@ COMMAND_ARITY = {
     "preview": (0,),
     # catalog 的合法个数：无参数、单关键词，以及末尾带 --sort price 的两种新形式
     "catalog": (0, 1, 2, 3),
-    # budget 只接受一个最高单价参数
-    "budget": (1,),
+    # budget 接受单个最高单价，或最高单价后接末尾的 --keyword 关键词
+    "budget": (1, 3),
 }
 
 
@@ -99,6 +99,30 @@ def split_catalog_args(args):
     return (rest[0] if rest else None), sort
 
 
+def split_budget_args(args):
+    """把 budget 的参数拆成 (上限原文, 关键词或 None)。
+
+    只接受两种形式：``budget 最高单价`` 与
+    ``budget 最高单价 --keyword 关键词``。条件片段由末尾两个独立参数
+    --keyword 关键词 组成，标记只接受该大小写；关键词位置的文字一律
+    当普通文字，不解释为选项（如 ``--sort`` 是合法关键词）。缺少上限
+    或关键词、关键词为空或全为空白、重复条件片段、排序片段及其他形式
+    都在此按参数错误拒绝；结构与关键词有效性先于上限的格式与范围校验。
+    """
+    rest = list(args)
+    keyword = None
+    if len(rest) == 3:
+        if rest[1] != "--keyword":
+            fail(ERR_ARGS, 2)
+        keyword = rest[2]
+        # 关键词是末尾的一个完整参数：空串或纯空白按参数错误拒绝，
+        # 首尾空格在含非空白文字时保留并参与匹配。
+        if not keyword.strip():
+            fail(ERR_ARGS, 2)
+        rest = rest[:1]
+    return rest[0], keyword
+
+
 def parse_args(argv):
     """解析 [--db 路径] 子命令 [参数...]，返回 (db_path, command, args)。"""
     db_path = DEFAULT_DB
@@ -123,6 +147,11 @@ def parse_args(argv):
         # 校验关键词与末尾排序片段的组合形式；排序方式不随参数返回，
         # 由 main 用同一拆分函数重新取得（解析入口保持三元组返回值）
         split_catalog_args(args)
+    elif command == "budget":
+        # 校验两种调用形式与关键词有效性；关键词不随参数返回，由 main
+        # 用同一拆分函数重新取得（结构与关键词错误在此即拒绝，先于上限
+        # 的格式与范围校验，且都发生在打开数据库之前）
+        split_budget_args(args)
     return db_path, command, args
 
 
@@ -518,19 +547,35 @@ def cmd_catalog(conn, keyword=None, sort=None):
     write_product_lines(rows)
 
 
-def cmd_budget(conn, limit):
+def cmd_budget(conn, limit, keyword=None):
     # 按单件商品的现价筛选：与购物车数量、满减无关，包含价格等于上限
     # 的商品。名称与单价全部取自数据库当前内容，不使用内置目录价格；
     # 按编号升序，行格式与空结果处理与 catalog 完全一致（共用同一读取
     # 与展示流程）。没有符合条件的商品时不输出任何内容（连末尾换行也
     # 没有），退出码仍为 0。
     rows = read_products(conn, "price <= ?", (limit,))
+    if keyword is not None:
+        # 关键词规则与 catalog 完全一致：区分大小写的原始文字子串匹配，
+        # 编号或名称任一字段包含整个关键词即保留，每件商品只出现一次。
+        # 在 Python 侧过滤而不用 SQL LIKE：百分号、下划线按普通字符处理，
+        # 不做大小写折叠，首尾空格也按字面参与匹配。
+        rows = [
+            (pid, name, price)
+            for pid, name, price in rows
+            if keyword in pid or keyword in name
+        ]
     write_product_lines(rows)
 
 
 def main(argv):
     db_path, command, args = parse_args(argv)
-    # budget 的格式与范围校验在打开数据库之前完成：参数被拒绝时不创建文件
+    if command == "budget":
+        # 调用形式与关键词有效性已在 parse_args 中校验（先于上限校验）；
+        # 这里重新拆分只是为了取出关键词，不会再有参数错误
+        _, budget_keyword = split_budget_args(args)
+    else:
+        budget_keyword = None
+    # budget 上限的格式与范围校验在打开数据库之前完成：参数被拒绝时不创建文件
     budget_limit = (
         parse_nonnegative_amount(args[0], ERR_BUDGET, ERR_BUDGET_RANGE)
         if command == "budget"
@@ -556,7 +601,7 @@ def main(argv):
             keyword, sort = split_catalog_args(args)
             cmd_catalog(conn, keyword, sort)
         elif command == "budget":
-            cmd_budget(conn, budget_limit)
+            cmd_budget(conn, budget_limit, budget_keyword)
         else:
             cmd_show(conn)
     finally:
