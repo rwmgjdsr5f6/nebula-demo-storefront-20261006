@@ -42,6 +42,17 @@ ERR_NOT_IN_CART = "商品不在购物车"
 ERR_DECREASE_TOO_MUCH = "减少数量超过购物车数量"
 ERR_DB = "数据库不可用"
 
+# 各子命令的固定参数个数；catalog 的参数个数规则特殊，单独校验
+COMMAND_ARITY = {
+    "add": 2,
+    "decrease": 2,
+    "set": 2,
+    "price": 2,
+    "remove": 1,
+    "clear": 0,
+    "show": 0,
+}
+
 
 def fail(message, code):
     print(message, file=sys.stderr)
@@ -65,26 +76,8 @@ def parse_args(argv):
     if not rest:
         fail(ERR_ARGS, 2)
     command, args = rest[0], rest[1:]
-    if command == "add":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "decrease":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "set":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "price":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "remove":
-        if len(args) != 1:
-            fail(ERR_ARGS, 2)
-    elif command == "clear":
-        if args:
-            fail(ERR_ARGS, 2)
-    elif command == "show":
-        if args:
+    if command in COMMAND_ARITY:
+        if len(args) != COMMAND_ARITY[command]:
             fail(ERR_ARGS, 2)
     elif command == "catalog":
         # 只接受零个或一个关键词。关键词是含非空白字符的完整原始参数：
