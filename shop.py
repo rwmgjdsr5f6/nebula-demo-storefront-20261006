@@ -216,33 +216,20 @@ def parse_nonnegative_quantity(text):
     return int(digits)
 
 
-def parse_price(text):
-    """price 专用：接受由 0-9 组成的非负整数单价，允许前导零（000 即零）。
+def parse_nonnegative_amount(text, format_error, range_error):
+    """金额类参数的共用校验：price 单价与 budget 上限走同一套规则。
 
-    数值超过 MAX_PRICE 时报“单价超出范围”。格式校验先于范围校验，
-    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
-    确定结果，不会因超长转换而出异常堆栈。
+    接受由 0-9 组成的非负整数，允许前导零（000 即零）；数值超过
+    MAX_PRICE 时按 range_error 拒绝。格式校验先于范围校验，范围比较
+    按去掉前导零后的十进制字符串进行：任意长度的数字串都有确定结果，
+    不会因超长转换而出异常堆栈。两个入口仅错误文案不同，规则不再
+    各自重复一份。
     """
-    digits = parse_quantity_digits(text, ERR_PRICE, allow_zero=True)
+    digits = parse_quantity_digits(text, format_error, allow_zero=True)
     if not digits:
         return 0
     if decimal_greater(digits, MAX_PRICE):
-        fail(ERR_PRICE_RANGE, 2)
-    return int(digits)
-
-
-def parse_budget(text):
-    """budget 专用：接受由 0-9 组成的非负整数单价上限，允许前导零（000 即零）。
-
-    数值超过 MAX_PRICE 时报“价格上限超出范围”。格式校验先于范围校验，
-    范围比较按去掉前导零后的十进制字符串进行：任意长度的数字串都有
-    确定结果，不会因超长转换而出异常堆栈。
-    """
-    digits = parse_quantity_digits(text, ERR_BUDGET, allow_zero=True)
-    if not digits:
-        return 0
-    if decimal_greater(digits, MAX_PRICE):
-        fail(ERR_BUDGET_RANGE, 2)
+        fail(range_error, 2)
     return int(digits)
 
 
@@ -349,7 +336,7 @@ def cmd_set(conn, product_id, quantity_text):
 
 def cmd_price(conn, product_id, price_text):
     # 单价格式校验先于范围校验，二者优先于编号：即使编号未知也先报告价格错误
-    price = parse_price(price_text)
+    price = parse_nonnegative_amount(price_text, ERR_PRICE, ERR_PRICE_RANGE)
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
@@ -492,7 +479,11 @@ def cmd_budget(conn, limit):
 def main(argv):
     db_path, command, args = parse_args(argv)
     # budget 的格式与范围校验在打开数据库之前完成：参数被拒绝时不创建文件
-    budget_limit = parse_budget(args[0]) if command == "budget" else None
+    budget_limit = (
+        parse_nonnegative_amount(args[0], ERR_BUDGET, ERR_BUDGET_RANGE)
+        if command == "budget"
+        else None
+    )
     conn = open_db(db_path)
     try:
         if command == "add":
