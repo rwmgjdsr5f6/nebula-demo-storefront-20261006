@@ -40,6 +40,7 @@ COMMAND_ARITY_CASES = {
     "remove": ((1,), (0, 2)),
     "clear": ((0,), (1,)),
     "show": ((0,), (1,)),
+    "preview": ((0,), (1, 2)),
     "catalog": ((0, 1), (2, 3)),
 }
 

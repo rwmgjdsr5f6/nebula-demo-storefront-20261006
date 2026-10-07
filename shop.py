@@ -9,6 +9,7 @@
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
+    python shop.py [--db 数据库文件] preview
     python shop.py [--db 数据库文件] catalog [关键词]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
@@ -30,6 +31,11 @@ MAX_QUANTITY = 9223372036854775807
 
 # 单价上界：同为 SQLite INTEGER 的最大值，单价允许为零
 MAX_PRICE = 9223372036854775807
+
+# preview 的固定满减：原始总金额达到 DISCOUNT_THRESHOLD 时减免 DISCOUNT_AMOUNT，
+# 每次预览最多减一次，即使总金额达到多个门槛也不叠加
+DISCOUNT_THRESHOLD = 5000
+DISCOUNT_AMOUNT = 500
 
 ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
@@ -57,6 +63,7 @@ COMMAND_ARITY = {
     "remove": (1,),
     "clear": (0,),
     "show": (0,),
+    "preview": (0,),
     "catalog": (0, 1),
 }
 
@@ -367,6 +374,38 @@ def cmd_show(conn):
     print(f"总金额 {total_amount}")
 
 
+def cmd_preview(conn):
+    """预览应用固定满减后的结算金额，只读、不落库、不产生订单。
+
+    商品行与 show 完全一致：编号、名称、单价、数量取自当前数据库，
+    按编号升序，小计为单价乘数量。汇总依次为总数量、优惠前总金额、
+    优惠金额与应付金额；总金额达到门槛时优惠固定数额且只减一次。
+    汇总在 Python 侧用任意精度整数计算，乘积或合计即使超过 SQLite
+    INTEGER 保存上界也保持精确。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT p.id, p.name, p.price, c.quantity "
+            "FROM cart c JOIN products p ON p.id = c.product_id "
+            "ORDER BY p.id"
+        ).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+    total_qty = 0
+    total_amount = 0
+    for pid, name, price, qty in rows:
+        subtotal = price * qty
+        total_qty += qty
+        total_amount += subtotal
+        print(f"{pid} {name} {price} {qty} {subtotal}")
+    discount = DISCOUNT_AMOUNT if total_amount >= DISCOUNT_THRESHOLD else 0
+    payable = total_amount - discount
+    print(f"总数量 {total_qty}")
+    print(f"总金额 {total_amount}")
+    print(f"优惠金额 {discount}")
+    print(f"应付金额 {payable}")
+
+
 def cmd_catalog(conn, keyword=None):
     try:
         rows = conn.execute(
@@ -402,6 +441,8 @@ def main(argv):
             cmd_clear(conn)
         elif command == "catalog":
             cmd_catalog(conn, args[0] if args else None)
+        elif command == "preview":
+            cmd_preview(conn)
         else:
             cmd_show(conn)
     finally:
