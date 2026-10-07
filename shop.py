@@ -48,6 +48,19 @@ def fail(message, code):
     sys.exit(code)
 
 
+# 各子命令允许的参数个数：元组中的每个元素都是一种合法个数
+COMMAND_ARITY = {
+    "add": (2,),
+    "decrease": (2,),
+    "set": (2,),
+    "price": (2,),
+    "remove": (1,),
+    "clear": (0,),
+    "show": (0,),
+    "catalog": (0, 1),
+}
+
+
 def parse_args(argv):
     """解析 [--db 路径] 子命令 [参数...]，返回 (db_path, command, args)。"""
     db_path = DEFAULT_DB
@@ -65,36 +78,14 @@ def parse_args(argv):
     if not rest:
         fail(ERR_ARGS, 2)
     command, args = rest[0], rest[1:]
-    if command == "add":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "decrease":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "set":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "price":
-        if len(args) != 2:
-            fail(ERR_ARGS, 2)
-    elif command == "remove":
-        if len(args) != 1:
-            fail(ERR_ARGS, 2)
-    elif command == "clear":
-        if args:
-            fail(ERR_ARGS, 2)
-    elif command == "show":
-        if args:
-            fail(ERR_ARGS, 2)
-    elif command == "catalog":
-        # 只接受零个或一个关键词。关键词是含非空白字符的完整原始参数：
-        # 首尾空格也参与匹配；空串或纯空白参数按参数错误拒绝。
-        if len(args) > 1:
-            fail(ERR_ARGS, 2)
-        if len(args) == 1 and not args[0].strip():
-            fail(ERR_ARGS, 2)
-    else:
+    arity = COMMAND_ARITY.get(command)
+    if arity is None or len(args) not in arity:
         fail(ERR_ARGS, 2)
+    if command == "catalog" and args:
+        # 关键词是含非空白字符的完整原始参数：首尾空格也参与匹配；
+        # 空串或纯空白参数按参数错误拒绝。
+        if not args[0].strip():
+            fail(ERR_ARGS, 2)
     return db_path, command, args
 
 
