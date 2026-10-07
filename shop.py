@@ -440,40 +440,69 @@ def cmd_preview(conn):
     write_lines(lines)
 
 
+def read_products(conn, where_sql="", params=(), order_sql="ORDER BY id"):
+    """读取商品目录行 (编号, 名称, 整数分单价)。
+
+    catalog 与 budget 共用的唯一目录读取流程：名称与单价全部取自数据库
+    当前内容（不使用内置目录价格）。where_sql、order_sql 只接受本模块
+    内部的固定片段（用户文本一律走 params 绑定），两个入口不再各自维护
+    一份查询与异常处理。查询失败时报“数据库不可用”并退出 1，不返回
+    任何部分明细。
+    """
+    try:
+        return conn.execute(
+            "SELECT id, name, price FROM products " + where_sql + " " + order_sql,
+            params,
+        ).fetchall()
+    except sqlite3.Error:
+        fail(ERR_DB, 1)
+
+
+def format_product_line(pid, name, price):
+    """商品行的唯一格式：编号、名称、单价，字段间恰好一个空格。
+
+    catalog 与 budget 的每一行都由这里生成，展示格式只维护这一处。
+    """
+    return f"{pid} {name} {price}"
+
+
+def write_product_lines(rows):
+    """全部商品行准备好后一次性输出：末行保留换行。
+
+    rows 为空（catalog 无匹配或 budget 无符合商品）时不输出任何字节，
+    失败路径也不会出现部分商品行。
+    """
+    if not rows:
+        return
+    write_lines([format_product_line(pid, name, price) for pid, name, price in rows])
+
+
 def cmd_catalog(conn, keyword=None, sort=None):
     # 排序只影响本次展示：按库中保存的整数分单价做数值比较（不是文本
     # 比较），同价按编号升序，零单价自然排在正数前面；INTEGER 上界
     # 9223372036854775807 也能准确比较。不带排序时维持原有的编号升序。
-    order = "ORDER BY price, id" if sort == "price" else "ORDER BY id"
-    try:
-        rows = conn.execute(
-            "SELECT id, name, price FROM products " + order
-        ).fetchall()
-    except sqlite3.Error:
-        fail(ERR_DB, 1)
-    for pid, name, price in rows:
+    order_sql = "ORDER BY price, id" if sort == "price" else "ORDER BY id"
+    rows = read_products(conn, order_sql=order_sql)
+    if keyword is not None:
         # 关键词按区分大小写的原始文字做子串匹配：编号或名称任一字段
         # 包含整个关键词即输出，每件商品只出现一次。在 Python 侧过滤
         # 而不用 SQL LIKE：百分号、下划线等符号一律按普通字符处理，
-        # 也不存在 ASCII 大小写折叠。关键词为 None 时输出全部商品。
-        if keyword is not None and keyword not in pid and keyword not in name:
-            continue
-        print(f"{pid} {name} {price}")
+        # 也不存在 ASCII 大小写折叠；首尾空格同样参与完整关键词匹配。
+        rows = [
+            (pid, name, price)
+            for pid, name, price in rows
+            if keyword in pid or keyword in name
+        ]
+    write_product_lines(rows)
 
 
 def cmd_budget(conn, limit):
     # 按单件商品的单价筛选：与购物车数量、满减无关。名称与单价全部取自
-    # 数据库当前内容，不使用内置目录价格；按编号升序，格式与 catalog 一致。
-    # 没有符合条件的商品时不输出任何内容（连末尾换行也没有）。
-    try:
-        rows = conn.execute(
-            "SELECT id, name, price FROM products WHERE price <= ? ORDER BY id",
-            (limit,),
-        ).fetchall()
-    except sqlite3.Error:
-        fail(ERR_DB, 1)
-    for pid, name, price in rows:
-        print(f"{pid} {name} {price}")
+    # 数据库当前内容，不使用内置目录价格；按编号升序，行格式与 catalog
+    # 共用同一处维护。没有符合条件的商品时不输出任何内容（连末尾换行也
+    # 没有）。
+    rows = read_products(conn, "WHERE price <= ?", (limit,))
+    write_product_lines(rows)
 
 
 def main(argv):
