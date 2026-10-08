@@ -10,7 +10,7 @@
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] preview
-    python shop.py [--db 数据库文件] catalog [关键词] [--sort price]
+    python shop.py [--db 数据库文件] catalog [关键词] [--sort price|price-desc]
     python shop.py [--db 数据库文件] budget 最高单价 [--keyword 关键词]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
@@ -66,7 +66,8 @@ COMMAND_ARITY = {
     "clear": (0,),
     "show": (0,),
     "preview": (0,),
-    # catalog 的合法个数：无参数、单关键词，以及末尾带 --sort price 的两种新形式
+    # catalog 的合法个数：无参数、单关键词，以及末尾带 --sort 排序值
+    # （price 或 price-desc）的两种形式
     "catalog": (0, 1, 2, 3),
     # budget 的合法个数：单个最高单价，或末尾带 --keyword 关键词的形式
     "budget": (1, 3),
@@ -76,18 +77,20 @@ COMMAND_ARITY = {
 def split_catalog_args(args):
     """把 catalog 的参数拆成 (关键词或 None, 排序方式或 None)。
 
-    排序片段由末尾两个独立参数 --sort price 组成，只接受该大小写：
-    ``catalog --sort price`` 与 ``catalog 关键词 --sort price`` 是新形式；
-    不带排序片段时保持原有形式（无参数或单个关键词，``catalog --sort``
-    中的 --sort 仍是普通关键词）。不支持的排序值、多个关键词、重复排序
-    片段及其他不符合新旧形式的组合都在此按参数错误拒绝。
+    排序片段由末尾两个独立参数 --sort 排序值组成，排序值只接受该
+    大小写的 price（单价升序）或 price-desc（单价降序）：
+    ``catalog --sort price``、``catalog --sort price-desc`` 及各自带上
+    关键词的形式都是合法形式；不带排序片段时保持原有形式（无参数或
+    单个关键词，``catalog --sort`` 中的 --sort 仍是普通关键词）。
+    不支持的排序值、多个关键词、重复排序片段及其他不符合新旧形式的
+    组合都在此按参数错误拒绝。
     """
     rest = list(args)
     sort = None
     if len(rest) >= 2:
-        if rest[-2] != "--sort" or rest[-1] != "price":
+        if rest[-2] != "--sort" or rest[-1] not in ("price", "price-desc"):
             fail(ERR_ARGS, 2)
-        sort = "price"
+        sort = rest[-1]
         rest = rest[:-2]
     if len(rest) > 1:
         fail(ERR_ARGS, 2)
@@ -497,7 +500,7 @@ def format_product_line(pid, name, price):
     return f"{pid} {name} {price}"
 
 
-def read_products(conn, condition="", params=(), by_price=False):
+def read_products(conn, condition="", params=(), sort=None):
     """读取目录商品，按展示顺序返回 (编号, 名称, 单价) 行序列。
 
     catalog 与 budget 共用的唯一读取流程：名称与单价全部取自数据库
@@ -507,11 +510,18 @@ def read_products(conn, condition="", params=(), by_price=False):
     筛选单件现价）；catalog 的关键词要按区分大小写的原始文字做字面
     包含判断，不能交给 SQL LIKE（百分号、下划线不是通配符），因此
     catalog 不带 SQL 条件，读出全部行后在调用方用 Python 过滤。
-    排序：by_price 为真时按库中保存的整数分单价做数值升序、同价按
-    编号升序；否则一律按编号升序。读取失败时统一报“数据库不可用”
-    退出 1，不返回任何部分结果。
+    排序：sort 为 "price" 时按库中保存的整数分单价做数值升序；
+    sort 为 "price-desc" 时按单价降序；两种单价排序下同价均按编号
+    升序，零单价在降序中自然排在正单价之后。其他情况一律按编号
+    升序。读取失败时统一报“数据库不可用”退出 1，不返回任何部分
+    结果。
     """
-    order = "ORDER BY price, id" if by_price else "ORDER BY id"
+    if sort == "price":
+        order = "ORDER BY price, id"
+    elif sort == "price-desc":
+        order = "ORDER BY price DESC, id"
+    else:
+        order = "ORDER BY id"
     sql = "SELECT id, name, price FROM products"
     if condition:
         sql += " WHERE " + condition
@@ -552,9 +562,10 @@ def filter_rows_by_keyword(rows, keyword):
 
 def cmd_catalog(conn, keyword=None, sort=None):
     # 排序只影响本次展示：按库中保存的整数分单价做数值比较（不是文本
-    # 比较），同价按编号升序，零单价自然排在正数前面；INTEGER 上界
+    # 比较），同价按编号升序；price 为升序（零单价排在正单价之前），
+    # price-desc 为降序（零单价排在正单价之后）；INTEGER 上界
     # 9223372036854775807 也能准确比较。不带排序时维持原有的编号升序。
-    rows = read_products(conn, by_price=(sort == "price"))
+    rows = read_products(conn, sort=sort)
     if keyword is not None:
         rows = filter_rows_by_keyword(rows, keyword)
     write_product_lines(rows)
