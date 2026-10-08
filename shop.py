@@ -386,26 +386,47 @@ def cmd_set(conn, product_id, quantity_text):
     adjust_cart_quantity(conn, product_id, target, lambda current, value: value)
 
 
-def cmd_price(conn, product_id, price_text):
-    # 单价格式校验先于范围校验，二者优先于编号：即使编号未知也先报告价格错误
-    price = parse_nonnegative_amount(price_text, ERR_PRICE, ERR_PRICE_RANGE)
+# ---- price / rename 共用的商品资料变更流程 ----
+#
+# 两个命令的差别只在“改哪个字段、新值如何得出、成功输出用什么标签”，
+# 由调用方先完成新值的解析/校验再传入：price 把参数解析为非负整数单价
+# （格式先于范围，且优先于编号），rename 的名称有效性已在打开数据库
+# 之前校验。商品存在性检查、单字段 UPDATE、提交、失败回滚与成功输出
+# 则完全相同，统一由 update_product_field 维护一份。
+
+
+def update_product_field(conn, product_id, column, value, label):
+    """price 与 rename 共用的商品资料变更流程。
+
+    column 是要覆盖的列名（"price" 或 "name"），只能由本模块内部的
+    固定调用点传入，不来自用户输入；value 是对应的新值，调用方已完成
+    全部校验。编号按原文精确匹配，不存在时报“未知商品”；只覆盖指定
+    字段：另一字段、编号与购物车数量均不受影响，是否已加入购物车都可
+    修改，设成当前值时这条 UPDATE 也照常执行并按成功处理。读取或写入
+    遇到数据库错误时报“数据库不可用”并退出 1，回滚保证不留下部分
+    修改。成功时输出“编号 标签 新值”并以换行结束。
+    """
     try:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = ?", (product_id,)
         ).fetchone()
         if row is None:
             fail(ERR_UNKNOWN_PRODUCT, 2)
-        # 只覆盖单价：名称、编号与购物车数量均不受影响，是否已加入购物车都可修改；
-        # 设成现有单价时这条 UPDATE 也照常执行并按成功处理
         conn.execute(
-            "UPDATE products SET price = ? WHERE id = ?",
-            (price, product_id),
+            f"UPDATE products SET {column} = ? WHERE id = ?",
+            (value, product_id),
         )
         conn.commit()
     except sqlite3.Error:
         conn.rollback()
         fail(ERR_DB, 1)
-    print(f"{product_id} 单价 {price}")
+    print(f"{product_id} {label} {value}")
+
+
+def cmd_price(conn, product_id, price_text):
+    # 单价格式校验先于范围校验，二者优先于编号：即使编号未知也先报告价格错误
+    price = parse_nonnegative_amount(price_text, ERR_PRICE, ERR_PRICE_RANGE)
+    update_product_field(conn, product_id, "price", price, "单价")
 
 
 def validate_name(name):
@@ -420,23 +441,9 @@ def validate_name(name):
 
 
 def cmd_rename(conn, product_id, new_name):
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM products WHERE id = ?", (product_id,)
-        ).fetchone()
-        if row is None:
-            fail(ERR_UNKNOWN_PRODUCT, 2)
-        # 只覆盖名称：单价、编号与购物车数量均不受影响，是否已加入购物车都可改名；
-        # 名称按原文保存（含首尾空格），改成当前名称时这条 UPDATE 也照常执行并成功
-        conn.execute(
-            "UPDATE products SET name = ? WHERE id = ?",
-            (new_name, product_id),
-        )
-        conn.commit()
-    except sqlite3.Error:
-        conn.rollback()
-        fail(ERR_DB, 1)
-    print(f"{product_id} 名称 {new_name}")
+    # 名称有效性已在打开数据库之前校验；这里按原文保存（含首尾空格），
+    # 不同商品允许同名
+    update_product_field(conn, product_id, "name", new_name, "名称")
 
 
 def cmd_remove(conn, product_id):
