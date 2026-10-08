@@ -6,6 +6,7 @@
     python shop.py [--db 数据库文件] decrease 商品编号 数量
     python shop.py [--db 数据库文件] set 商品编号 目标数量
     python shop.py [--db 数据库文件] price 商品编号 单价
+    python shop.py [--db 数据库文件] rename 商品编号 新名称
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
@@ -41,6 +42,7 @@ ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
 ERR_SET_QUANTITY = "数量必须为非负整数"
 ERR_PRICE = "单价必须为非负整数"
+ERR_NAME = "商品名称无效"
 ERR_RANGE = "数量超出范围"
 ERR_PRICE_RANGE = "单价超出范围"
 ERR_BUDGET = "价格上限必须为非负整数"
@@ -62,6 +64,7 @@ COMMAND_ARITY = {
     "decrease": (2,),
     "set": (2,),
     "price": (2,),
+    "rename": (2,),
     "remove": (1,),
     "clear": (0,),
     "show": (0,),
@@ -405,6 +408,37 @@ def cmd_price(conn, product_id, price_text):
     print(f"{product_id} 单价 {price}")
 
 
+def validate_name(name):
+    """rename 的名称校验：空串、全为空白或含回车/换行的名称一律拒绝。
+
+    只校验有效性，不做任何转换：首尾空格与其他标点、中文都按原文保留。
+    结构校验（参数个数等）之后、打开数据库之前调用，因此被拒绝时不会
+    创建数据库文件。
+    """
+    if not name.strip() or "\n" in name or "\r" in name:
+        fail(ERR_NAME, 2)
+
+
+def cmd_rename(conn, product_id, new_name):
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        # 只覆盖名称：单价、编号与购物车数量均不受影响，是否已加入购物车都可改名；
+        # 名称按原文保存（含首尾空格），改成当前名称时这条 UPDATE 也照常执行并成功
+        conn.execute(
+            "UPDATE products SET name = ? WHERE id = ?",
+            (new_name, product_id),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        fail(ERR_DB, 1)
+    print(f"{product_id} 名称 {new_name}")
+
+
 def cmd_remove(conn, product_id):
     try:
         row = conn.execute(
@@ -598,6 +632,9 @@ def main(argv):
         )
     else:
         budget_limit = None
+    if command == "rename":
+        # 名称有效性在打开数据库之前校验：名称被拒时不创建文件
+        validate_name(args[1])
     conn = open_db(db_path)
     try:
         if command == "add":
@@ -608,6 +645,8 @@ def main(argv):
             cmd_set(conn, args[0], args[1])
         elif command == "price":
             cmd_price(conn, args[0], args[1])
+        elif command == "rename":
+            cmd_rename(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
         elif command == "clear":
