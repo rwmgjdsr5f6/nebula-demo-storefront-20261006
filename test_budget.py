@@ -331,12 +331,11 @@ class ShopBudgetTests(unittest.TestCase):
     # ---- 调用结构错误 ---------------------------------------------------
 
     def test_budget_requires_exactly_one_argument(self):
-        """缺少上限或带额外参数都报“参数错误”，不接受关键词和排序参数。"""
+        """缺少上限或带额外参数都报“参数错误”，不接受裸关键词参数。"""
         bad_argv = [
             ["budget"],
             ["budget", "100", "200"],
             ["budget", "100", "笔记"],
-            ["budget", "100", "--sort", "price"],
             ["budget", "--sort", "price"],
             ["budget", "100", "extra", "extra2"],
         ]

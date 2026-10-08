@@ -10,9 +10,10 @@
   字符，关键词含非空白文字时首尾空格也参与匹配。
 - 名称与单价取自所选库保存值，改价后重查立即按新价筛选；纯只读、
   不保存筛选条件，默认库与两种 --db 形式照旧。
-- 只接受 ``budget 上限`` 与 ``budget 上限 --keyword 关键词`` 两种
-  形式；调用形式与关键词有效性先于上限格式与范围校验，全部在打开
-  数据库之前拒绝，不创建数据库文件。
+- 只接受 ``budget 上限``、``budget 上限 --keyword 关键词`` 以及末尾
+  追加 ``--sort price|price-desc`` 排序片段的形式；调用形式与关键词
+  有效性先于上限格式与范围校验，全部在打开数据库之前拒绝，不创建
+  数据库文件。
 
 只使用 Python 标准库；在项目目录执行：
 
@@ -333,7 +334,7 @@ class ShopBudgetKeywordTests(unittest.TestCase):
     # ---- 调用形式错误 ---------------------------------------------------
 
     def test_invalid_forms_report_argument_error_before_open(self):
-        """只接受两种形式：缺上限/缺关键词、错大小写、重复片段等全部拒绝。"""
+        """非法调用形式：缺上限/缺关键词、错大小写、重复片段等全部拒绝。"""
         bad_args = [
             # 缺少上限：--keyword 不能顶替上限位置
             ["budget", "--keyword", "笔记"],
@@ -351,9 +352,6 @@ class ShopBudgetKeywordTests(unittest.TestCase):
             # 两个位置参数不是合法形式
             ["budget", "100", "笔记"],
             ["budget", "2500", "笔记", "马克"],
-            # 排序片段不被接受
-            ["budget", "100", "--sort", "price"],
-            ["budget", "100", "--keyword", "笔记", "--sort", "price"],
             # 重复条件片段
             ["budget", "100", "--keyword", "笔记", "--keyword", "本"],
             # 多余参数

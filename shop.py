@@ -12,7 +12,7 @@
     python shop.py [--db 数据库文件] show
     python shop.py [--db 数据库文件] preview
     python shop.py [--db 数据库文件] catalog [关键词] [--sort price|price-desc]
-    python shop.py [--db 数据库文件] budget 最高单价 [--keyword 关键词]
+    python shop.py [--db 数据库文件] budget 最高单价 [--keyword 关键词] [--sort price|price-desc]
 
 不指定 --db 时使用当前工作目录下的 shop.sqlite3。
 """
@@ -72,8 +72,9 @@ COMMAND_ARITY = {
     # catalog 的合法个数：无参数、单关键词，以及末尾带 --sort price 或
     # --sort price-desc 的两种新形式（排序片段都由两个独立参数组成）
     "catalog": (0, 1, 2, 3),
-    # budget 的合法个数：单个最高单价，或末尾带 --keyword 关键词的形式
-    "budget": (1, 3),
+    # budget 的合法个数：单个最高单价，或末尾带 --keyword 关键词、
+    # --sort price|price-desc 排序片段（两个独立参数）之一或两者
+    "budget": (1, 3, 5),
 }
 
 
@@ -106,30 +107,41 @@ def split_catalog_args(args):
 
 
 def split_budget_args(args):
-    """把 budget 的参数拆成 (最高单价文本, 关键词或 None)。
+    """把 budget 的参数拆成 (最高单价文本, 关键词或 None, 排序方式或 None)。
 
-    只接受两种调用形式：``budget 最高单价`` 与
-    ``budget 最高单价 --keyword 关键词``。关键词条件由末尾两个独立参数
-    --keyword 关键词 组成，标记只接受该大小写；关键词位置的文字一律
-    按完整关键词处理，不解释为选项（即使它以连字符开头）。缺少上限或
-    关键词、关键词为空或全为空白、重复条件片段、排序片段及其他形式都
-    在此按参数错误拒绝。
+    合法形式：``budget 最高单价``、``budget 最高单价 --keyword 关键词``、
+    ``budget 最高单价 --sort price|price-desc`` 以及两者同时出现的
+    ``budget 最高单价 --keyword 关键词 --sort price|price-desc``。
+    排序片段由末尾两个独立参数组成：只允许出现一次并位于末尾，有
+    关键词时放在关键词片段之后；排序值只接受 price 与 price-desc
+    两个小写写法。关键词位置的文字一律按完整关键词处理，不解释为
+    选项（即使它是 --sort，也可以在其后再追加排序片段）。缺少排序
+    值、排序值不是两个小写写法、重复排序片段、排序位置错误、关键
+    词为空或全为空白、多余参数及其他形式都在此按参数错误拒绝。
 
     这里只校验调用形式与关键词有效性：最高单价的格式与范围由调用方
     在打开数据库之前另行校验，因此本函数返回的上限仍是原始文本。
     """
     rest = list(args)
+    sort = None
+    if len(rest) >= 2 and rest[-2] == "--sort":
+        if rest[-1] not in ("price", "price-desc"):
+            fail(ERR_ARGS, 2)
+        sort = rest[-1]
+        rest = rest[:-2]
     keyword = None
     if len(rest) == 3:
         if rest[1] != "--keyword":
             fail(ERR_ARGS, 2)
         keyword = rest[2]
         rest = rest[:1]
+    if len(rest) != 1:
+        fail(ERR_ARGS, 2)
     # 关键词是含非空白字符的完整原始参数：首尾空格也参与匹配；
     # 空串或纯空白参数按参数错误拒绝。
     if keyword is not None and not keyword.strip():
         fail(ERR_ARGS, 2)
-    return rest[0], keyword
+    return rest[0], keyword, sort
 
 
 def parse_args(argv):
@@ -613,13 +625,15 @@ def cmd_catalog(conn, keyword=None, sort=None):
     write_product_lines(rows)
 
 
-def cmd_budget(conn, limit, keyword=None):
+def cmd_budget(conn, limit, keyword=None, sort=None):
     # 按单件商品的现价筛选：与购物车数量、满减无关，包含价格等于上限
-    # 的商品。名称与单价全部取自数据库当前内容，不使用内置目录价格；
-    # 按编号升序，行格式与空结果处理与 catalog 完全一致（共用同一读取
-    # 与展示流程）。没有符合条件的商品时不输出任何内容（连末尾换行也
-    # 没有），退出码仍为 0。
-    rows = read_products(conn, "price <= ?", (limit,))
+    # 的商品。名称与单价全部取自数据库当前内容，不使用内置目录价格。
+    # 排序只影响本次展示：与 catalog 相同的规则按库中整数分单价升序
+    # 或降序（同价按编号升序，升序时零单价在正数前、降序时在正数后），
+    # 不带排序时维持原有的编号升序；行格式与空结果处理与 catalog 完全
+    # 一致（共用同一读取与展示流程）。没有符合条件的商品时不输出任何
+    # 内容（连末尾换行也没有），退出码仍为 0。
+    rows = read_products(conn, "price <= ?", (limit,), price_order=sort)
     if keyword is not None:
         # 可选关键词与预算同时生效：先按价格在 SQL 侧筛过一遍，再用与
         # catalog 完全相同的区分大小写字面规则在编号或名称中匹配整个
@@ -631,11 +645,12 @@ def cmd_budget(conn, limit, keyword=None):
 def main(argv):
     db_path, command, args = parse_args(argv)
     # budget 的调用形式与关键词有效性已在 parse_args 中校验；这里再拆分
-    # 一次以取得关键词，并在打开数据库之前完成上限的格式与范围校验：
-    # 参数被拒绝时不创建文件
+    # 一次以取得关键词与排序方式，并在打开数据库之前完成上限的格式与
+    # 范围校验：参数被拒绝时不创建文件
     budget_keyword = None
+    budget_sort = None
     if command == "budget":
-        budget_limit_text, budget_keyword = split_budget_args(args)
+        budget_limit_text, budget_keyword, budget_sort = split_budget_args(args)
         budget_limit = parse_nonnegative_amount(
             budget_limit_text, ERR_BUDGET, ERR_BUDGET_RANGE
         )
@@ -666,7 +681,7 @@ def main(argv):
             keyword, sort = split_catalog_args(args)
             cmd_catalog(conn, keyword, sort)
         elif command == "budget":
-            cmd_budget(conn, budget_limit, budget_keyword)
+            cmd_budget(conn, budget_limit, budget_keyword, budget_sort)
         else:
             cmd_show(conn)
     finally:
