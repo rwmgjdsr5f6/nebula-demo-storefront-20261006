@@ -6,6 +6,7 @@
     python shop.py [--db 数据库文件] decrease 商品编号 数量
     python shop.py [--db 数据库文件] set 商品编号 目标数量
     python shop.py [--db 数据库文件] price 商品编号 单价
+    python shop.py [--db 数据库文件] rename 商品编号 新名称
     python shop.py [--db 数据库文件] remove 商品编号
     python shop.py [--db 数据库文件] clear
     python shop.py [--db 数据库文件] show
@@ -41,6 +42,7 @@ ERR_ARGS = "参数错误"
 ERR_QUANTITY = "数量必须为正整数"
 ERR_SET_QUANTITY = "数量必须为非负整数"
 ERR_PRICE = "单价必须为非负整数"
+ERR_NAME = "商品名称无效"
 ERR_RANGE = "数量超出范围"
 ERR_PRICE_RANGE = "单价超出范围"
 ERR_BUDGET = "价格上限必须为非负整数"
@@ -62,6 +64,7 @@ COMMAND_ARITY = {
     "decrease": (2,),
     "set": (2,),
     "price": (2,),
+    "rename": (2,),
     "remove": (1,),
     "clear": (0,),
     "show": (0,),
@@ -383,6 +386,18 @@ def cmd_set(conn, product_id, quantity_text):
     adjust_cart_quantity(conn, product_id, target, lambda current, value: value)
 
 
+def parse_product_name(text):
+    """rename 专用的新名称校验：名称按完整原始参数处理，原样返回。
+
+    只拒绝三类名称：空串、全为空白、含有回车或换行；其余名称（含中文、
+    标点、首尾空格）一律按原文接受，不裁剪、不规范化。校验在打开数据库
+    之前完成：名称无效时不创建数据库文件。
+    """
+    if not text.strip() or "\r" in text or "\n" in text:
+        fail(ERR_NAME, 2)
+    return text
+
+
 def cmd_price(conn, product_id, price_text):
     # 单价格式校验先于范围校验，二者优先于编号：即使编号未知也先报告价格错误
     price = parse_nonnegative_amount(price_text, ERR_PRICE, ERR_PRICE_RANGE)
@@ -403,6 +418,28 @@ def cmd_price(conn, product_id, price_text):
         conn.rollback()
         fail(ERR_DB, 1)
     print(f"{product_id} 单价 {price}")
+
+
+def cmd_rename(conn, product_id, new_name):
+    # 新名称的有效性已在打开数据库之前校验；这里只处理编号与写库。
+    # 编号按原样精确匹配，是否已加入购物车都可改名
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            fail(ERR_UNKNOWN_PRODUCT, 2)
+        # 只覆盖名称：单价、编号与购物车数量均不受影响；不同商品允许同名，
+        # 改成当前名称时这条 UPDATE 也照常执行并按成功处理
+        conn.execute(
+            "UPDATE products SET name = ? WHERE id = ?",
+            (new_name, product_id),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        fail(ERR_DB, 1)
+    print(f"{product_id} 名称 {new_name}")
 
 
 def cmd_remove(conn, product_id):
@@ -598,6 +635,9 @@ def main(argv):
         )
     else:
         budget_limit = None
+    # rename 的新名称校验同样在打开数据库之前完成：名称无效时不创建文件
+    if command == "rename":
+        parse_product_name(args[1])
     conn = open_db(db_path)
     try:
         if command == "add":
@@ -608,6 +648,8 @@ def main(argv):
             cmd_set(conn, args[0], args[1])
         elif command == "price":
             cmd_price(conn, args[0], args[1])
+        elif command == "rename":
+            cmd_rename(conn, args[0], args[1])
         elif command == "remove":
             cmd_remove(conn, args[0])
         elif command == "clear":
