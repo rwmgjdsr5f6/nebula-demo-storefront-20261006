@@ -151,10 +151,11 @@ class ParseArgsDirectTests(unittest.TestCase):
         self.assert_parse_error(["CATALOG"])
 
     def test_db_option_missing_or_empty_path_is_error(self):
-        """--db 缺少路径、--db= 的值为空：参数错误。"""
+        """--db 缺少路径、两种写法的空路径：参数错误。"""
         self.assert_parse_error(["--db"])
         self.assert_parse_error(["--db="])
         self.assert_parse_error(["--db=", "show"])
+        self.assert_parse_error(["--db", "", "show"])
 
     def test_input_sequence_not_mutated(self):
         """成功与失败两条路径都不修改传入的参数序列（含 --db 消耗的情形）。"""

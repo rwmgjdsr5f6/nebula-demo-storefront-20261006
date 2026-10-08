@@ -138,8 +138,10 @@ def parse_args(argv):
     elif rest and rest[0].startswith("--db="):
         db_path = rest[0][len("--db="):]
         rest = rest[1:]
-        if not db_path:
-            fail(ERR_ARGS, 2)
+    # 两种写法对空路径一视同仁：显式选择数据库时长度为零的路径按参数
+    # 错误拒绝，不替换成默认路径；非空路径（含首尾空格）原样传递
+    if not db_path:
+        fail(ERR_ARGS, 2)
     if not rest:
         fail(ERR_ARGS, 2)
     command, args = rest[0], rest[1:]
