@@ -135,6 +135,10 @@ def parse_args(argv):
             fail(ERR_ARGS, 2)
         db_path = rest[1]
         rest = rest[2:]
+        # 显式选择数据库时，两种写法的空路径一致拒绝：只拒绝长度为零的
+        # 字符串，纯空白等非空路径仍按原样传递，不做裁剪或重写
+        if not db_path:
+            fail(ERR_ARGS, 2)
     elif rest and rest[0].startswith("--db="):
         db_path = rest[0][len("--db="):]
         rest = rest[1:]
