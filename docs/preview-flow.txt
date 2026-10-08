@@ -6,7 +6,7 @@
 任何产品逻辑、SQLite 表结构或公开命令。所有结论先给 shop.py 中的函数与
 源码位置（行号对应当前 shop.py），再附现有测试中同名用例的预期作为旁证；
 测试通过不替代源码依据，每条结论均可按所列行号逐项核对，并可与 README.md
-“使用示例”“规则说明”两节对照。
+“使用示例”“规则说明”两节（README.md:16-136、138-188）对照。
 
 文中命令均以当前目录下的 demo.sqlite3 为所选数据库：
 
@@ -31,63 +31,64 @@ demo.sqlite3 中已保存如下状态（这是运行两条查看命令之前就�
     P002  数量 1
 
 其中 P002 的 2600 是改价后“当前保存值”：内置演示目录 CATALOG 里 P002
-的初始单价是 2500（shop.py:25-28 的 ("P002", "虚拟马克杯", 2500)），
-该样例库此前经公开入口 `price P002 2600` 把单价保存为 2600（cmd_price，
-shop.py:348-367，更新语句在 359-362 行）。查看时读取的是 products 表中
-保存的 2600，而不是 CATALOG 中的 2500；这一点的源码依据见第 4 节的查询
-语句。该数据准备方式与 README 第 91-98 行的改价示例一致。
+的初始单价是 2500（shop.py:26-29 的 CATALOG，("P002", "虚拟马克杯", 2500)
+在 28 行），该样例库此前经公开入口 `price P002 2600` 把单价保存为 2600
+（cmd_price，shop.py:440-444，实际更新语句在共用的 update_product_field
+中，shop.py:429-432）。查看时读取的是 products 表中保存的 2600，而不是
+CATALOG 中的 2500；这一点的源码依据见第 2.4 节的查询语句。该数据准备
+方式与 README 第 108-117 行的改价示例一致。
 
 --------------------------------------------------------------------------------
 2. 端到端流程：从命令行到六行/四行输出
 --------------------------------------------------------------------------------
 
 两条命令经过同一套入口，差别只在最后追加几行汇总。main 的调度见
-shop.py:531-563：
+shop.py:645-688：
 
-    532  db_path, command, args = parse_args(argv)      # 2.1 参数检查
-    539  conn = open_db(db_path)                        # 2.2/2.3 选择、打开、初始化
-    553-554  command == "preview" -> cmd_preview(conn)  # 2.4-2.7
-    560-561  其余分支之外（含 show）-> cmd_show(conn)
-    562-563  finally: conn.close()
+    646  db_path, command, args = parse_args(argv)      # 2.1 参数检查
+    662  conn = open_db(db_path)                        # 2.2/2.3 选择、打开、初始化
+    678-679  command == "preview" -> cmd_preview(conn)  # 2.4-2.7
+    685-686  其余分支之外（含 show）-> cmd_show(conn)
+    687-688  finally: conn.close()
 
 成功走完全程时进程自然结束，退出码为 0。
 
-2.1 参数检查（parse_args，shop.py:102-126；失败出口 fail，54-56）
+2.1 参数检查（parse_args，shop.py:147-179；失败出口 fail，56-58）
 
-  - --db 的两种形式在 parse_args 开头解析（shop.py:104-115）：
-      `--db 路径`（106-110 行）与 `--db=路径`（111-115 行）；省略时
-    db_path 取默认值 DEFAULT_DB = "shop.sqlite3"（22 行、104 行）。
+  - --db 的两种形式在 parse_args 开头解析（shop.py:151-164）：
+      `--db 路径`（151-159 行）与 `--db=路径`（160-164 行）；省略时
+    db_path 取默认值 DEFAULT_DB = "shop.sqlite3"（23 行、149 行）。
     路径原样保留，不做拼接或转换。本文样例解析出 db_path="demo.sqlite3"。
-  - 子命令与参数个数：COMMAND_ARITY（shop.py:60-73）规定
-      "show": (0,)（67 行）、"preview": (0,)（68 行），
-    即两者都不接受业务参数。119-121 行对未知子命令或参数个数不在元组中
-    的调用执行 fail(ERR_ARGS, 2)；ERR_ARGS 的文案是“参数错误”（40 行）。
-  - 参数检查全部发生在 open_db（539 行）之前，因此参数被拒时数据库
+  - 子命令与参数个数：COMMAND_ARITY（shop.py:62-78）规定
+      "show": (0,)（70 行）、"preview": (0,)（71 行），
+    即两者都不接受业务参数。168-170 行对未知子命令或参数个数不在元组中
+    的调用执行 fail(ERR_ARGS, 2)；ERR_ARGS 的文案是“参数错误”（41 行）。
+  - 参数检查全部发生在 open_db（662 行）之前，因此参数被拒时数据库
     尚未打开（详见第 6 节）。
 
 2.2 数据库选择
 
   选择哪一个文件完全由 2.1 解析出的 db_path 决定，进程不会在选定库
-  不可用时回退去读默认库（open_db 只接收这一个路径，shop.py:129-132）。
+  不可用时回退去读默认库（open_db 只接收这一个路径，shop.py:182-202）。
   本文两条命令都只访问 demo.sqlite3。
 
-2.3 打开（必要时创建）与初始化（open_db，shop.py:129-149）
+2.3 打开（必要时创建）与初始化（open_db，shop.py:182-202）
 
-  - 132 行 sqlite3.connect(db_path)：文件已存在则打开；不存在则创建新
+  - 185 行 sqlite3.connect(db_path)：文件已存在则打开；不存在则创建新
     文件。
-  - 133-141 行 CREATE TABLE IF NOT EXISTS 建 products 与 cart 两张表
+  - 186-194 行 CREATE TABLE IF NOT EXISTS 建 products 与 cart 两张表
     （字段定义即当前表结构，本文不涉及变更）。
-  - 142-145 行 executemany + INSERT OR IGNORE 把 CATALOG 两件演示商品
+  - 195-198 行 executemany + INSERT OR IGNORE 把 CATALOG 两件演示商品
     写入 products：“OR IGNORE”按主键 id 冲突忽略，所以只补入缺失的
     演示商品，绝不覆盖已保存的名称或单价——样例库中 P002 的 2600 在
     每次打开后仍保持 2600。
-  - 146 行 commit。147-148 行捕获 sqlite3.Error，转成
-    fail(ERR_DB, 1)（ERR_DB 文案“数据库不可用”，51 行）。
+  - 199 行 commit。200-201 行捕获 sqlite3.Error，转成
+    fail(ERR_DB, 1)（ERR_DB 文案“数据库不可用”，53 行）。
 
-2.4 购物车读取（read_cart_summary，shop.py:400-425）
+2.4 购物车读取（read_cart_summary，shop.py:493-518）
 
-  cmd_show（433-437 行）与 cmd_preview（440-451 行）调用的是同一个
-  读取函数，不各写一份 SQL。核心查询在 410-414 行：
+  cmd_show（526-530 行）与 cmd_preview（533-544 行）调用的是同一个
+  读取函数，不各写一份 SQL。核心查询在 503-507 行：
 
       SELECT p.id, p.name, p.price, c.quantity
       FROM cart c JOIN products p ON p.id = c.product_id
@@ -99,21 +100,21 @@ shop.py:531-563：
   - INNER JOIN 决定：只有已在购物车中的商品才产生商品行；商品表中
     未加入购物车的 P 商品不显示。反过来，购物车行都能连到商品行。
   - ORDER BY p.id 决定商品行按编号升序：样例中 P001 在 P002 之前。
-  - 查询失败在 415-416 行 fail(ERR_DB, 1)，此时一行明细都还没有输出。
+  - 查询失败在 508-509 行 fail(ERR_DB, 1)，此时一行明细都还没有输出。
 
-2.5 整数金额计算（read_cart_summary 循环，shop.py:417-425）
+2.5 整数金额计算（read_cart_summary 循环，shop.py:513-517）
 
-  对每行 (pid, name, price, qty)（420 行）：
-      subtotal = price * qty        421 行，行小计
-      total_qty += qty              422 行，总数量累加
-      total_amount += subtotal      423 行，总金额累加
-      lines.append(f"{pid} {name} {price} {qty} {subtotal}")  424 行
+  对每行 (pid, name, price, qty)（513 行）：
+      subtotal = price * qty        514 行，行小计
+      total_qty += qty              515 行，总数量累加
+      total_amount += subtotal      516 行，总金额累加
+      lines.append(f"{pid} {name} {price} {qty} {subtotal}")  517 行
 
   price、qty 是从 SQLite 读出的整数（合法保存值各自不超过
-  9223372036854775807，见 MAX_PRICE 34 行、MAX_QUANTITY 31 行）；
+  9223372036854775807，见 MAX_PRICE 35 行、MAX_QUANTITY 32 行）；
   乘法与累加全部使用 Python 任意精度整数，结果只用于本次展示、不写回
   数据库，所以小计或合计超过 SQLite INTEGER 上界时仍能精确显示完整
-  十进制整数（函数文档说明见 404-407 行）。
+  十进制整数（函数文档说明见 494-501 行）。
 
   套入样例：
       P001 行小计 = 1200 * 2 = 2400
@@ -121,28 +122,28 @@ shop.py:531-563：
       total_qty    = 2 + 1 = 3
       total_amount = 2400 + 2600 = 5000
 
-2.6 满减判断（仅 preview，cmd_preview，shop.py:440-451）
+2.6 满减判断（仅 preview，cmd_preview，shop.py:533-544）
 
-  门槛与固定减额是模块常量：DISCOUNT_THRESHOLD = 5000（37 行）、
-  DISCOUNT_AMOUNT = 500（38 行）。判定只有一行表达式（446 行）：
+  门槛与固定减额是模块常量：DISCOUNT_THRESHOLD = 5000（38 行）、
+  DISCOUNT_AMOUNT = 500（39 行）。判定只有一行表达式（539 行）：
 
       discount = DISCOUNT_AMOUNT if total_amount >= DISCOUNT_THRESHOLD else 0
 
   即“达到或超过 5000 减 500，否则优惠为 0”，代码中不存在第二档或循环
-  叠加，因此无论总金额超过门槛多少倍都只减一次 500。应付金额在 450 行
+  叠加，因此无论总金额超过门槛多少倍都只减一次 500。应付金额在 543 行
   计算：total_amount - discount。样例 total_amount = 5000，满足
   5000 >= 5000（门槛含等号），discount = 500，应付 = 4500。
 
 2.7 展示顺序与写出（cmd_show / cmd_preview / write_lines）
 
-  preview 按固定顺序追加四行汇总（shop.py:447-450）：
+  preview 按固定顺序追加四行汇总（shop.py:540-543）：
       总数量 / 总金额 / 优惠金额 / 应付金额
-  show 只追加前两行（shop.py:435-436）：
+  show 只追加前两行（shop.py:528-529）：
       总数量 / 总金额
   商品行都来自 2.4-2.5 同一个 lines 列表，因此两条命令的商品明细与
   “总数量、总金额”必然一致；show 不参与满减，没有后两行。
 
-  两条命令最后都调用 write_lines（shop.py:428-430）：
+  两条命令最后都调用 write_lines（shop.py:521-523）：
       sys.stdout.write("\n".join(lines) + "\n")
   全部行先在内存中准备好再一次写出，所以失败路径（2.4 中 fail）不会
   出现“先吐一部分明细再报错”。
@@ -178,13 +179,13 @@ P002 虚拟马克杯 2600 1 2600
 3.3 空格、换行与字段口径
 
   - 商品行五个字段（编号、名称、单价、数量、小计）之间各恰好一个 ASCII
-    空格，来自 424 行的 f"{pid} {name} {price} {qty} {subtotal}"；名称
+    空格，来自 517 行的 f"{pid} {name} {price} {qty} {subtotal}"；名称
     内部自身不含空格，字段之间没有对齐填充或多个空格。
   - 汇总行“标签”与数值之间恰好一个 ASCII 空格，如 f"总数量 {total_qty}"、
-    f"优惠金额 {discount}"（shop.py:435-436、447-450 行）。
-  - write_lines 的拼法是“行间一个 \n，整体末尾再补一个 \n”：preview
-    六个换行、最后一行“应付金额 4500”后有且仅有一个换行；show 四个
-    换行、最后一行“总金额 5000”后有且仅有一个换行。不存在多余空行
+    f"优惠金额 {discount}"（shop.py:528-529、540-543 行）。
+  - write_lines 的拼法是“行间一个 \n，整体末尾再补一个 \n”（523 行）：
+    preview 六个换行、最后一行“应付金额 4500”后有且仅有一个换行；show
+    四个换行、最后一行“总金额 5000”后有且仅有一个换行。不存在多余空行
     （不是以 \n\n 结尾）。
   - 输出文本按 UTF-8 解码即上面的中文与数字；标签文字必须与源码字面量
     一致（“总数量/总金额/优惠金额/应付金额”）。
@@ -192,8 +193,8 @@ P002 虚拟马克杯 2600 1 2600
 3.4 两次查看都不修改已保存的数据
 
   cmd_show、cmd_preview、read_cart_summary 中只有 SELECT
-  （shop.py:410-414），没有 INSERT/UPDATE/DELETE；优惠金额仅是
-  cmd_preview 的局部变量（446 行），不写库。因此连续任意次运行
+  （shop.py:503-507），没有 INSERT/UPDATE/DELETE；优惠金额仅是
+  cmd_preview 的局部变量（539 行），不写库。因此连续任意次运行
   preview、show 之后，demo.sqlite3 中仍是：
       products：P001/1200、P002/2600；cart：P001 数量 2、P002 数量 1；
   数据库对象仍只有 products、cart 两张表及两者的主键自动索引
@@ -205,34 +206,34 @@ P002 虚拟马克杯 2600 1 2600
 4. 金额规则与边界（同一套源码在其他数据上的推论）
 --------------------------------------------------------------------------------
 
-以下结论都由第 2 节列出的同一几行代码推出，并与 README 第 126-131 行
-“规则说明”一致。
+以下结论都由第 2 节列出的同一几行代码推出，并与 README 第 160-165 行
+“规则说明”中的金额与 preview 条目一致。
 
-  - 低于门槛不优惠：total_amount < 5000 时 446 行取 0，优惠金额显示 0，
-    应付金额等于总金额。例如仅内置价两件 P001、一件 P002 时总金额
+  - 低于门槛不优惠：total_amount < 5000 时 539 行取 0，优惠金额显示 0，
+    应付金额等于总金额。例如按内置价两件 P001、一件 P002 时总金额
     4900，preview 输出“优惠金额 0 / 应付金额 4900”。
   - 恰好达到门槛减 500：含等号（>=），5000 与 5001 一样减 500。
   - 达到多个门槛仍只减一次：判定表达式只有固定两档（500 或 0），没有
     按倍数重复扣减；总金额 10000 时优惠仍为 500、应付 9500。
   - 空购物车：2.4 的查询返回空列表，商品行一行都没有；total_qty 与
-    total_amount 保持初值 0（shop.py:418-419），preview 仍追加四行
-    汇总且全部为 0（447-450 行）；show 只追加“总数量 0”“总金额 0”
-    两行（435-436 行）。空输出仍按 write_lines 末行带一个换行。
+    total_amount 保持初值 0（shop.py:511-512），preview 仍追加四行
+    汇总且全部为 0（540-543 行）；show 只追加“总数量 0”“总金额 0”
+    两行（528-529 行）。空输出仍按 write_lines 末行带一个换行。
   - 零单价商品照常显示：单价为 0 的商品只要在 cart 中就会被 JOIN 取出，
-    商品行、数量照常出现，行小计为 0，数量仍计入总数量（420-424 行对
+    商品行、数量照常出现，行小计为 0，数量仍计入总数量（513-517 行对
     price 没有非零判断）。
   - 超过 SQLite 整数保存上限仍精确显示：单价、数量各自合法落库（至多
     9223372036854775807），但 subtotal、total_qty、total_amount 由
-    Python 任意精度整数算出且只显示不落库（421-423 行）。例如单价、
+    Python 任意精度整数算出且只显示不落库（514-516 行）。例如单价、
     数量均为上界时，行小计
     85070591730234615847396907784232501249、总数量
     18446744073709551614、总金额
     170141183460469231694793815568465002498 都以完整十进制整数输出，
-    无小数、无科学记数法、无截断；preview 的优惠仍按 446 行判定为 500，
+    无小数、无科学记数法、无截断；preview 的优惠仍按 539 行判定为 500，
     应付 = 总金额 - 500。
   - 改价后读当前保存值：价格的唯一来源是 SELECT 中的 p.price
-    （shop.py:411 行），内置 CATALOG 只在 open_db 的 INSERT OR IGNORE
-    中用于补缺（142-145 行），不参与查看。因此 `price` 改价并提交后，
+    （shop.py:504 行），内置 CATALOG 只在 open_db 的 INSERT OR IGNORE
+    中用于补缺（195-198 行），不参与查看。因此 `price` 改价并提交后，
     show/preview 立即按新价重算；改回原价后立即恢复原结果，进程之间
     不缓存任何价格或优惠状态。数量经 set/decrease/add 变化后同理，
     每次查看都按 cart 中当前数量重新汇总与判定满减。
@@ -242,18 +243,18 @@ P002 虚拟马克杯 2600 1 2600
 --------------------------------------------------------------------------------
 
 事实 A：首次使用一个不存在的数据库会“创建并初始化演示商品”。
-  路径：main 539 行调用 open_db；132 行创建文件，133-141 行建两张表，
-  142-145 行写入 CATALOG 两件演示商品（P001 1200、P002 2500），146 行
+  路径：main 662 行调用 open_db；185 行创建文件，186-194 行建两张表，
+  195-198 行写入 CATALOG 两件演示商品（P001 1200、P002 2500），199 行
   提交。首次对新库执行 show/preview 时购物车为空：show 输出两行零，
-  preview 输出四行零。README 第 107 行有同样说明。
+  preview 输出四行零。README 第 136 行有同样说明。
 
 事实 B：在已有正常数据库上预览是纯只读结算计算。
   路径：open_db 的 CREATE TABLE IF NOT EXISTS 与 INSERT OR IGNORE 对
-  已有对象/已有编号均为空操作，不覆盖保存的价格（133-145 行）；随后
-  cmd_preview 只执行 SELECT（410-414 行）并在内存里算金额与满减
-  （421-423、446、450 行）。因此已有库上的 preview：不创建订单、不清空
+  已有对象/已有编号均为空操作，不覆盖保存的价格（186-198 行）；随后
+  cmd_preview 只执行 SELECT（503-507 行）并在内存里算金额与满减
+  （514-516、539、543 行）。因此已有库上的 preview：不创建订单、不清空
   购物车、不保存优惠状态，名称/单价/数量均以库中当前内容为准；show
-  同理只读，且只显示优惠前金额。README 第 129 行有同样说明。
+  同理只读，且只显示优惠前金额。README 第 163 行有同样说明。
 
 --------------------------------------------------------------------------------
 6. 异常路径（仅就 show/preview 这条入口）
@@ -262,14 +263,14 @@ P002 虚拟马克杯 2600 1 2600
 6.1 preview 带额外参数（如 `python shop.py --db demo.sqlite3 preview extra`）
 
   - 判定位置：parse_args 中 COMMAND_ARITY["preview"] = (0,)
-    （shop.py:68），参数个数为 1，不在 (0,) 中，120-121 行
+    （shop.py:71），参数个数为 1，不在 (0,) 中，168-170 行
     fail(ERR_ARGS, 2)。
-  - 时机：parse_args 在 main 532 行完成，open_db 在 539 行才调用，
+  - 时机：parse_args 在 main 646 行完成，open_db 在 662 行才调用，
     所以拒绝发生在打开数据库之前；当 --db 指向一个尚不存在的路径时，
     文件不会被创建。
   - 标准输出：空（没有任何字节）。
   - 标准错误：仅“参数错误”一行并换行，即字节内容为 `参数错误\n`
-    （fail 用 print(..., file=sys.stderr)，shop.py:54-56）。
+    （fail 用 print(..., file=sys.stderr)，shop.py:56-58）。
   - 退出码：2；stderr 中不出现 Traceback。
   show 走同一个 parse_args，`show extra` 的表现相同。
 
@@ -277,19 +278,19 @@ P002 虚拟马克杯 2600 1 2600
 
   - 无法创建/打开（如 --db 指向不存在目录下的文件，或路径本身是一个
     已存在的目录）：sqlite3.connect 或紧随其后的建表/写入在 open_db 的
-    try 块内抛 sqlite3.Error，shop.py:147-148 捕获后
+    try 块内抛 sqlite3.Error，shop.py:200-201 捕获后
     fail(ERR_DB, 1)。
   - 无法读取（库能打开但购物车查询失败，例如 cart 表缺少 quantity
-    列）：read_cart_summary 的 SELECT 抛 sqlite3.Error，415-416 行
-    fail(ERR_DB, 1)。此时 lines 尚未写出（write_lines 在 451 行之后
-    才调用），不会把读不出的购物车当成空购物车，也没有任何商品明细或
-    汇总输出。
+    列）：read_cart_summary 的 SELECT 抛 sqlite3.Error，508-509 行
+    fail(ERR_DB, 1)。此时 lines 尚未写出（write_lines 在读取成功之后
+    才调用，cmd_show 530 行、cmd_preview 544 行），不会把读不出的
+    购物车当成空购物车，也没有任何商品明细或汇总输出。
   - 标准输出：空。
   - 标准错误：仅“数据库不可用”一行并换行，即 `数据库不可用\n`
-    （ERR_DB 见 shop.py:51）。
+    （ERR_DB 见 shop.py:53）。
   - 退出码：1；stderr 中不出现 Traceback；选定库失败时不会借用默认
     shop.sqlite3 的购物车。
-  以上对 show 同样适用（show 的读取失败也是 415-416 行这一处）。
+  以上对 show 同样适用（show 的读取失败也是 508-509 行这一处）。
 
 --------------------------------------------------------------------------------
 7. 现有测试对照（旁证；预期以测试中的手写字面量为准，源码仍是首要依据）
@@ -350,7 +351,9 @@ test_preview_precision.py（类 ShopPreviewPrecisionTests）：
     越界（18446744073709551614），总金额 36893488147419103228、应付
     36893488147419102728，优惠仍只减一次；输出中不含小数点或科学
     记数法标记。
-  - 两个用例都在预览前后比对数据库对象、商品与购物车记录不变。
+  - 以上两个用例都在预览前后比对数据库对象、商品与购物车记录不变；
+    test_preview_repeated_runs_leave_only_temp_db 另核对连续三次预览后
+    临时目录中仍只有显式传入的那一个数据库文件，不产生额外文件。
 
 test_show_precision.py（类 ShopShowPrecisionTests）：
   - test_show_at_max_precision_then_zero_price：单价与数量均到上界时
@@ -405,7 +408,7 @@ test_parse_args.py（类 ParseArgsDirectTests）：
 [ ] `preview extra` 与数据库不可用两类异常的 stdout/stderr/退出码及时机
     符合第 6 节。
 [ ] 第 4 节门槛、空车、零单价、越界大整数与改价结论可由对应源码行与
-    第 7 节同名测试双重核对；README 第 47-61、107、126-131 行的描述与
+    第 7 节同名测试双重核对；README 第 64-78、136、160-165 行的描述与
     本文一致。
 [ ] add/decrease/set/price/remove/clear/catalog/budget 等其他入口行为
     不在本文改动范围内，保持既有行为。
